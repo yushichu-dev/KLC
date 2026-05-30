@@ -1,0 +1,33 @@
+struct MyStruct {
+    items: [i64]
+}
+
+impl MyStruct {
+    fn make() -> MyStruct = MyStruct { items: [1, 2, 3] }
+
+    fn get_len(self) -> i64 = self.items.len()
+
+    fn push_item(self, val: i64) -> MyStruct {
+        let mut new_items = []
+        let mut i = 0
+        while i < self.items.len() {
+            new_items.push(self.items[i])
+            i = i + 1
+        }
+        new_items.push(val)
+        return MyStruct { items: new_items }
+    }
+}
+
+fn main() {
+    let s = MyStruct::make()
+    io.println("len: " ++ s.get_len().to_str())
+    let s2 = s.push_item(99)
+    io.println("len2: " ++ s2.get_len().to_str())
+
+    -- direct array len
+    let arr = [10, 20, 30]
+    io.println("arr len: " ++ arr.len().to_str())
+    arr.push(40)
+    io.println("after push: " ++ arr.len().to_str())
+}

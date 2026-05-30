@@ -1,0 +1,2 @@
+println("HELLO")
+exit(0)

@@ -1,0 +1,29 @@
+-- fibonacci_iter.klc — 迭代斐波那契基准测试
+-- 计算斐波那契数列 fib(90)，循环 50 次取最后一次结果
+-- 测试循环变量寄存器提升、强度削减（乘 2 → 移位）
+
+fn fib(n) {
+    if n <= 1 { return n }
+    let mut prev = 0
+    let mut curr = 1
+    let mut i = 2
+    while i <= n {
+        let tmp = prev + curr
+        prev = curr
+        curr = tmp
+        i = i + 1
+    }
+    return curr
+}
+
+-- fib(90) = 2880067194370816120
+-- 循环 50 次，每次计算 fib(90)
+let mut sum = 0
+for i in 0..50 {
+    sum = sum + fib(90)
+}
+-- 验证: 50 * 2880067194370816120 = 144003359718540806000
+if sum != 144003359718540806000 {
+    exit(1)
+}
+println("PASS")

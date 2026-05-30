@@ -1,0 +1,21 @@
+[package]
+name = "klc"
+version = "0.8.4"
+edition = "2021"
+description = "KLC Programming Language - Compiler & VM"
+
+[[bin]]
+name = "klc"
+path = "src/main.rs"
+
+
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false
+
+[build-dependencies]
+embed-resource = "2.4"
+
+[dependencies]

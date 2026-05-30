@@ -1,0 +1,421 @@
+-- ============================================================================
+-- KLC:AI 激活函数库
+-- 版本: v1.0.0
+-- 实现 AI 模型常用的激活函数：ReLU, GELU, SiLU/Swish
+-- 支持编译期常量折叠优化（纯函数 + 数学恒等变换）
+-- ============================================================================
+
+mod activation
+
+use tensor
+
+-- |===========================================================================|
+-- |                        常量定义                                           |
+-- |===========================================================================|
+
+--- 平方根2，用于GELU
+let SQRT_2 = 1.41421356237309504880
+
+--- 平方根(2/π)，用于近似GELU
+let SQRT_2_OVER_PI = 0.79788456080286535587
+
+-- |===========================================================================|
+-- |                     ReLU 及其变体                                          |
+-- |===========================================================================|
+
+--- ReLU (Rectified Linear Unit)
+--- f(x) = max(0, x)
+---
+--- 特性：
+--- - 计算高效（单次比较）
+--- - 稀疏激活（负值归零）
+--- - 梯度消失问题（负区间梯度为0）
+pub fn relu(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        -- 编译器可识别此模式并优化为条件传送(CMOV)指令
+        let val = if x.data[i] > 0.0 { x.data[i] } else { 0.0 }
+        result.push(val)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- ReLU 的导数（用于反向传播）
+--- f'(x) = 1 if x > 0 else 0
+pub fn relu_derivative(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        let val = if x.data[i] > 0.0 { 1.0 } else { 0.0 }
+        result.push(val)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- LeakyReLU
+--- f(x) = max(αx, x), α 通常取 0.01
+---
+--- 解决 ReLU 死神经元问题
+pub fn leaky_relu(x: Tensor, alpha: f64 = 0.01) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        let val = if x.data[i] > 0.0 {
+            x.data[i]
+        } else {
+            alpha * x.data[i]
+        }
+        result.push(val)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- GELU (Gaussian Error Linear Unit)
+--- 精确形式: f(x) = x * Φ(x)
+--- 其中 Φ(x) 是标准正态分布的累积分布函数 (CDF)
+---
+--- GELU 是 Transformer 模型的首选激活函数（BERT, GPT 等），
+--- 相比 ReLU 具有更平滑的梯度和更好的性能。
+---
+--- 实现方式：
+--- 使用精确的误差函数 erf() 计算
+--- f(x) = 0.5 * x * (1 + erf(x / √2))
+pub fn gelu(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        -- 使用 erf 计算精确 GELU
+        let xi = x.data[i]
+        let cdf = 0.5 * (1.0 + math.erf(xi / SQRT_2))
+        result.push(xi * cdf)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- GELU 近似版本（Tanh 版本）
+--- 使用 tanh 近似以避免计算 erf：
+--- f(x) ≈ 0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x³)))
+---
+--- 优势：
+--- - 计算更快（tanh 比 erf 更易计算）
+--- - 在 GPU 上有硬件加速支持
+--- - 误差 < 0.005，对模型精度影响极小
+pub fn gelu_tanh_approx(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        let xi = x.data[i]
+        let inner = SQRT_2_OVER_PI * (xi + 0.044715 * xi * xi * xi)
+        let approx = 0.5 * xi * (1.0 + math.tanh(inner))
+        result.push(approx)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- GELU 快速近似版本（Sigmoid 版本）
+--- 使用 sigmoid 近似：
+--- f(x) ≈ x * σ(1.702 * x)
+---
+--- 最快但精度最低的版本，适合推理阶段
+pub fn gelu_sigmoid_approx(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        let xi = x.data[i]
+        let sig = sigmoid(1.702 * xi)
+        result.push(xi * sig)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- SiLU / Swish (Sigmoid Linear Unit)
+--- f(x) = x * σ(x) = x / (1 + e^(-x))
+---
+--- 特性：
+--- - 非单调、非凸函数
+--- - 负值区域保持小幅度输出（避免死神经元）
+--- - 梯度平滑，训练稳定
+--- - YOLOv8, LLaMA 等现代模型使用
+pub fn silu(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        let xi = x.data[i]
+        let sig = sigmoid(xi)
+        result.push(xi * sig)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- Swish (SiLU 的别名，带可学习参数 β)
+--- f(x) = x * σ(βx), β 默认为 1.0
+pub fn swish(x: Tensor, beta: f64 = 1.0) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        let xi = x.data[i]
+        let sig = sigmoid(beta * xi)
+        result.push(xi * sig)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- SiLU 的导数
+--- f'(x) = σ(x) + x * σ(x) * (1 - σ(x))
+pub fn silu_derivative(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        let xi = x.data[i]
+        let sig = sigmoid(xi)
+        let deriv = sig + xi * sig * (1.0 - sig)
+        result.push(deriv)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+-- |===========================================================================|
+-- |                      其他常用激活函数                                       |
+-- |===========================================================================|
+
+--- Sigmoid
+--- σ(x) = 1 / (1 + e^(-x))
+---
+--- 数值稳定性优化：
+--- - 当 x >= 0: σ(x) = 1 / (1 + e^(-x))
+--- - 当 x < 0:  σ(x) = e^x / (1 + e^x)  （避免上溢）
+pub fn sigmoid(x: f64) -> f64 {
+    if x >= 0.0 {
+        let e_neg_x = math.exp(-x)
+        return 1.0 / (1.0 + e_neg_x)
+    } else {
+        let e_x = math.exp(x)
+        return e_x / (1.0 + e_x)
+    }
+}
+
+--- Tanh (双曲正切)
+--- tanh(x) = (e^x - e^(-x)) / (e^x + e^(-x))
+pub fn tanh_activation(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        result.push(math.tanh(x.data[i]))
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- Softplus
+--- softplus(x) = ln(1 + e^x)
+--- ReLU 的平滑版本
+pub fn softplus(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        let xi = x.data[i]
+        -- 数值稳定版本
+        if xi > 20.0 {
+            result.push(xi)  -- 避免溢出
+        } else if xi < -20.0 {
+            result.push(0.0)
+        } else {
+            result.push(math.ln(1.0 + math.exp(xi)))
+        }
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- ELU (Exponential Linear Unit)
+--- ELU(x) = x if x > 0 else α(e^x - 1), α 通常取 1.0
+---
+--- 解决 ReLU 平均输出不为0的问题
+pub fn elu(x: Tensor, alpha: f64 = 1.0) -> Tensor {
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        let val = if x.data[i] > 0.0 {
+            x.data[i]
+        } else {
+            alpha * (math.exp(x.data[i]) - 1.0)
+        }
+        result.push(val)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- Mish
+--- mish(x) = x * tanh(softplus(x))
+---
+--- 结合了 Softplus 和 Tanh 的优点，
+--- 在图像分类和目标检测任务中表现优异
+pub fn mish(x: Tensor) -> Tensor {
+    let sp = softplus(x)
+
+    let n = x.size()
+    let mut result = []
+
+    for i in 0..n {
+        result.push(x.data[i] * math.tanh(sp.data[i]))
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+-- |===========================================================================|
+-- |                       Softmax 函数                                         |
+-- |===========================================================================|
+
+--- Softmax（沿最后一维）
+--- softmax(x_i) = e^(x_i) / Σe^(x_j)
+---
+--- 用于将向量转换为概率分布，广泛用于注意力机制和分类层。
+---
+--- 数值稳定性：使用 max-subtraction trick 防止指数溢出
+pub fn softmax(x: Tensor) -> Tensor {
+    if not x.is_vector() and not x.is_matrix() {
+        io.println("Error: softmax 支持 1D 或 2D 张量")
+        exit(1)
+    }
+
+    -- 如果是矩阵，按行计算 softmax
+    if x.is_matrix() {
+        return softmax_matrix(x)
+    }
+
+    -- 向量 softmax
+    let n = x.size()
+
+    -- 找最大值（数值稳定性）
+    let max_val = x.max()
+
+    -- 计算 exp(x - max)
+    let mut exp_vals = []
+    let mut sum_exp = 0.0
+
+    for i in 0..n {
+        let e = math.exp(x.data[i] - max_val)
+        exp_vals.push(e)
+        sum_exp = sum_exp + e
+    }
+
+    -- 归一化
+    let mut result = []
+    for i in 0..n {
+        result.push(exp_vals[i] / sum_exp)
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- 矩阵按行 Softmax
+fn softmax_matrix(x: Tensor) -> Tensor {
+    let rows = x.shape.dims[0]
+    let cols = x.shape.dims[1]
+
+    let mut result = []
+
+    for r in 0..rows {
+        -- 提取当前行并找最大值
+        let mut row_max = x.data[r * cols]
+        for c in 1..cols {
+            if x.data[r * cols + c] > row_max {
+                row_max = x.data[r * cols + c]
+            }
+        }
+
+        -- 计算该行的 exp 和
+        let mut sum_exp = 0.0
+        let mut exp_row = []
+        for c in 0..cols {
+            let e = math.exp(x.data[r * cols + c] - row_max)
+            exp_row.push(e)
+            sum_exp = sum_exp + e
+        }
+
+        -- 归一化
+        for c in 0..cols {
+            result.push(exp_row[c] / sum_exp)
+        }
+    }
+
+    return Tensor::matrix(rows, cols, result)
+}
+
+--- LogSoftmax
+--- log_softmax(x) = log(softmax(x)) = x - log(Σe^x)
+---
+--- 数值上比先 softmax 再 log 更稳定
+pub fn log_softmax(x: Tensor) -> Tensor {
+    if not x.is_vector() and not x.is_matrix() {
+        io.println("Error: log_softmax 支持 1D 或 2D 张量")
+        exit(1)
+    }
+
+    -- 向量版本
+    if x.is_vector() {
+        let n = x.size()
+        let max_val = x.max()
+
+        let mut sum_exp = 0.0
+        for i in 0..n {
+            sum_exp = sum_exp + math.exp(x.data[i] - max_val)
+        }
+
+        let mut result = []
+        for i in 0..n {
+            result.push(x.data[i] - max_val - math.ln(sum_exp))
+        }
+
+        return Tensor::from_shape(x.get_shape(), result)
+    }
+
+    -- 矩阵版本（按行）
+    let rows = x.shape.dims[0]
+    let cols = x.shape.dims[1]
+    let mut result = []
+
+    for r in 0..rows {
+        let mut row_max = x.data[r * cols]
+        for c in 1..cols {
+            if x.data[r * cols + c] > row_max {
+                row_max = x.data[r * cols + c]
+            }
+        }
+
+        let mut sum_exp = 0.0
+        for c in 0..cols {
+            sum_exp = sum_exp + math.exp(x.data[r * cols + c] - row_max)
+        }
+
+        for c in 0..cols {
+            result.push(x.data[r * cols + c] - row_max - math.ln(sum_exp))
+        }
+    }
+
+    return Tensor::matrix(rows, cols, result)
+}

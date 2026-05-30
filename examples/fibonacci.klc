@@ -1,0 +1,45 @@
+-- fibonacci.klc — KLC MVP: 递归 + 循环
+
+mod main
+use io
+
+--- 递归版斐波那契
+fn fib_rec(n: i64) -> i64 {
+    if n <= 1 { return n }
+    return fib_rec(n - 1) + fib_rec(n - 2)
+}
+
+--- 迭代版斐波那契
+fn fib_iter(n: i64) -> i64 {
+    if n <= 1 { return n }
+
+    let mut prev = 0
+    let mut curr = 1
+    let mut i = 2
+
+    while i <= n {
+        let next = prev + curr
+        prev = curr
+        curr = next
+        i = i + 1
+    }
+    return curr
+}
+
+fn main() {
+    io.println("=== KLC Fibonacci ===")
+
+    let n = 10
+
+    io.println("fib_rec(10) = " ++ fib_rec(n).to_str())
+    io.println("fib_iter(10) = " ++ fib_iter(n).to_str())
+
+    -- 打印前 10 项
+    io.println("--- First 10 numbers ---")
+    let mut i = 0
+    while i < n {
+        io.print(fib_iter(i).to_str() ++ " ")
+        i = i + 1
+    }
+    io.println("")
+}
