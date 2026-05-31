@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 // ============================================================================
+<<<<<<< HEAD
 // Transformer 模型数据结构（阶段6：纯Rust推理后端）
 // ============================================================================
 
@@ -49,6 +50,8 @@ pub struct TransformerModelData {
 }
 
 // ============================================================================
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 // 值类型
 // ============================================================================
 
@@ -64,9 +67,12 @@ pub enum Value {
     Array(Rc<RefCell<Vec<Value>>>),
     Enum(Rc<RefCell<(String, String, Vec<Value>)>>),
     Map(Rc<RefCell<HashMap<String, Value>>>),
+<<<<<<< HEAD
     Matrix(Rc<RefCell<Vec<Vec<f64>>>>),
     /// 阶段6: Transformer 推理模型
     TransformerModel(Rc<RefCell<TransformerModelData>>),
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
     Function(String),
 }
 
@@ -79,6 +85,7 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::Null, Value::Null) => true,
+<<<<<<< HEAD
             (Value::Matrix(a), Value::Matrix(b)) => {
                 let ra = a.borrow();
                 let rb = b.borrow();
@@ -101,6 +108,8 @@ impl PartialEq for Value {
                     && ma.vocab_size == mb.vocab_size
                     && ma.max_seq_len == mb.max_seq_len
             }
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             _ => false,
         }
     }
@@ -165,6 +174,7 @@ impl fmt::Debug for Value {
                 }
                 write!(f, "}}")
             }
+<<<<<<< HEAD
             Value::Matrix(data) => {
                 let m = data.borrow();
                 write!(f, "Matrix[{}x{}]", m.len(), m.first().map_or(0, |r| r.len()))
@@ -174,6 +184,8 @@ impl fmt::Debug for Value {
                 write!(f, "TransformerModel(d={}, heads={}, d_ff={}, layers={}, vocab={})",
                     m.d_model, m.n_heads, m.d_ff, m.n_layers, m.vocab_size)
             }
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             Value::Function(name) => write!(f, "<fn {}>", name),
         }
     }
@@ -194,6 +206,7 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Char(c) => write!(f, "{}", c),
             Value::Null => write!(f, "null"),
+<<<<<<< HEAD
             Value::Matrix(data) => {
                 let m = data.borrow();
                 write!(f, "Matrix(rows={}, cols={}", m.len(), m.first().map_or(0, |r| r.len()))
@@ -203,6 +216,8 @@ impl fmt::Display for Value {
                 write!(f, "TransformerModel(d={}, heads={}, layers={}, vocab={})",
                     m.d_model, m.n_heads, m.n_layers, m.vocab_size)
             }
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             other => write!(f, "{:?}", other),
         }
     }
@@ -234,6 +249,7 @@ pub enum Instruction {
     Halt,
     Print,
     PrintLn,
+<<<<<<< HEAD
     ReadLine,
     RegFn(String, String),
     IsVariant(String),
@@ -256,6 +272,11 @@ pub enum Instruction {
     /// 等待所有异步任务完成
     #[allow(dead_code)]
     WaitAll,
+=======
+    RegFn(String, String),
+    IsVariant(String),
+    EnumGet(usize),
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 }
 
 // ============================================================================

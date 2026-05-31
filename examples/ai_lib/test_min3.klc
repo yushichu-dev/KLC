@@ -1,0 +1,25 @@
+-- 测试数组和循环
+mod t3
+
+type Tensor {
+    data: [f64]
+}
+
+impl Tensor {
+    fn size(self) -> i64 = self.data.len()
+    fn get(self, idx: i64) -> f64 = self.data[idx]
+    fn t_sum(self) -> f64 {
+        let mut s = 0.0
+        for i in 0..self.size() { s = s + self.data[i] }
+        return s
+    }
+}
+
+fn main() {
+    let t = Tensor { data: [1.0, 2.0, 3.0, 4.0, 5.0] }
+    io.println("size=" ++ t.size().to_str())
+    io.println("[0]=" ++ t.get(0).to_str())
+    io.println("sum=" ++ t.t_sum().to_str())
+    io.println("OK")
+    exit(0)
+}

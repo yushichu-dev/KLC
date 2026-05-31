@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ﻿//! KLC 字节码编译器优化 Pass (v1.0.3-正式版 增强版)
+=======
+//! KLC 字节码编译器优化 Pass (v0.8.4 增强版)
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 //!
 //! 在 AST → Bytecode 编译前对 AST 进行优化：
 //! - 常量折叠：编译期计算常量表达式（如 `2+3` → `5`）
@@ -543,11 +547,17 @@ fn optimize_expr(expr: Expr) -> Expr {
             Expr::TailCall(name, args.into_iter().map(optimize_expr).collect())
         }
 
+<<<<<<< HEAD
         // 原子表达式 + 新语法构造（不变）
         e @ Expr::Integer(_) | e @ Expr::Float(_) | e @ Expr::String(_)
         | e @ Expr::Bool(_) | e @ Expr::Char(_) | e @ Expr::Ident(_) | e @ Expr::Null
         | e @ Expr::EnumConstructor { .. } | e @ Expr::ResultOk(_) | e @ Expr::ResultErr(_)
         | e @ Expr::Try(_) | e @ Expr::GoSpawn(_) => e,
+=======
+        // 原子表达式不变
+        e @ Expr::Integer(_) | e @ Expr::Float(_) | e @ Expr::String(_)
+        | e @ Expr::Bool(_) | e @ Expr::Char(_) | e @ Expr::Ident(_) | e @ Expr::Null => e,
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
     }
 }
 

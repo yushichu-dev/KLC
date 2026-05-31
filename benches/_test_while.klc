@@ -1,0 +1,10 @@
+-- 最小 while 循环测试
+let mut i = 0
+while i < 5 {
+    i = i + 1
+}
+if i == 5 {
+    println("PASS")
+} else {
+    println("FAIL")
+}

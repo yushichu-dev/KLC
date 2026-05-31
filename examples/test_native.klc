@@ -1,0 +1,18 @@
+io.println("=== KLC Stage 4 ===")
+let x = 10
+let y = 20
+let sum = x + y
+if sum == 30 { io.println("Add: OK") } else { io.println("Add: FAIL") }
+let check = sum - 30
+if check == 0 { io.println("Zero: OK") } else { io.println("Zero: FAIL") }
+let a = 100
+let b = 7
+let d = a / b
+if d == 14 { io.println("Div: OK") } else { io.println("Div: FAIL") }
+let m = a % b
+if m == 2 { io.println("Mod: OK") } else { io.println("Mod: FAIL") }
+let x2 = 5
+let y2 = 3
+let mul = x2 * y2
+if mul == 15 { io.println("Mul: OK") } else { io.println("Mul: FAIL") }
+io.println("DONE")

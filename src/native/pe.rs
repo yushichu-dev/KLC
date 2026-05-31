@@ -233,7 +233,11 @@ impl OptionalHeader64 {
     pub fn standard_console(entry_point: u32, code_size: u32, image_base: u64) -> Self {
         OptionalHeader64 {
             magic:                      0x020B,      // PE32+
+<<<<<<< HEAD
             major_linker_version:       14,           // 链接器版本 (VS 2019级别)
+=======
+            major_linker_version:       1,
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             minor_linker_version:       0,
             size_of_code:               code_size,   // 代码节文件大小
             size_of_initialized_data:   0,
@@ -242,6 +246,7 @@ impl OptionalHeader64 {
             base_of_code:               0x1000,      // 代码节 RVA
             image_base:                 image_base,
             section_alignment:          0x1000,      // 4KB
+<<<<<<< HEAD
             file_alignment:             0x0200,      // 512B (Win7+ 兼容)
             major_os_version:           6,           // 最低要求 Windows Vista/7
             minor_os_version:           1,           // 6.1 = Windows 7
@@ -261,6 +266,21 @@ impl OptionalHeader64 {
             // HIGH_ENTROPY_VA (0x0020): 64位高熵ASLR — Win8+
             // TERMINAL_SERVER_AWARE (0x8000): 终端服务兼容
             dll_characteristics:        0x8160,      // NX | DYNAMIC_BASE | HIGH_ENTROPY | TS_AWARE
+=======
+            file_alignment:             0x0200,      // 512B
+            major_os_version:           6,           // Windows Vista+
+            minor_os_version:           0,
+            major_image_version:        0,
+            minor_image_version:        0,
+            major_subsystem_version:    6,
+            minor_subsystem_version:    0,
+            win32_version_value:        0,
+            size_of_image:              (0x1000 + ((code_size.max(1) + 0xFFF) & !0xFFF)), // 头 + 代码节（内存对齐）
+            size_of_headers:            0x0200,      // 512B（文件对齐）
+            checksum:                   0,
+            subsystem:                  0x0003,      // WINDOWS_CUI
+            dll_characteristics:        0x0100,      // NX_COMPAT only (no ASLR for pointer simplicity)
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             size_of_stack_reserve:      0x0010_0000, // 1MB
             size_of_stack_commit:       0x0000_1000, // 4KB
             size_of_heap_reserve:       0x0010_0000, // 1MB
@@ -444,10 +464,13 @@ pub struct PeBuilder {
     import_size: u32,
     /// 导入节 RVA（默认 .text 之后: 0x2000）
     idata_rva: u32,
+<<<<<<< HEAD
     /// 是否生成 .reloc 节（默认 true，启用 ASLR 需要）
     generate_reloc: bool,
     /// .reloc 节 RVA（默认 .idata 之后）
     reloc_rva: u32,
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 }
 
 impl PeBuilder {
@@ -467,8 +490,11 @@ impl PeBuilder {
             import_rva: 0,
             import_size: 0,
             idata_rva: 0x2000,
+<<<<<<< HEAD
             generate_reloc: true,    // 默认启用 ASLR 兼容
             reloc_rva: 0x3000,       // .reloc 节默认 RVA
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         }
     }
 
@@ -505,11 +531,15 @@ impl PeBuilder {
     /// 生成完整的 PE 文件二进制数据
     ///
     /// 按 PE 规范组装所有头部和节数据，返回可直接写入磁盘的字节数组。
+<<<<<<< HEAD
     /// 包含 .text + [.idata] + [.reloc] 节，自动计算 PE 校验和。
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
     ///
     /// # 返回值
     /// 完整的 PE 文件二进制数据 (`Vec<u8>`)
     pub fn build(&self) -> Vec<u8> {
+<<<<<<< HEAD
         let mut buf = Vec::with_capacity(4096);
         let has_imports = self.import_data.is_some();
         let has_reloc = self.generate_reloc;
@@ -518,6 +548,11 @@ impl PeBuilder {
         let mut num_sections = 1u16; // .text 始终存在
         if has_imports { num_sections += 1; }
         if has_reloc   { num_sections += 1; }
+=======
+        let mut buf = Vec::with_capacity(2048);
+        let has_imports = self.import_data.is_some();
+        let num_sections = if has_imports { 2u16 } else { 1u16 };
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 
         // ---- 1. DOS Header (64 字节) ----
         self.write_struct(&mut buf, &DosHeader::standard());
@@ -544,6 +579,7 @@ impl PeBuilder {
         let import_file_size = if has_imports {
             let isize = self.import_data.as_ref().unwrap().len() as u32;
             (isize + FILE_ALIGNMENT - 1) & !(FILE_ALIGNMENT - 1)
+<<<<<<< HEAD
         } else { 0 };
         let reloc_data = if has_reloc { Self::build_reloc_table(self.image_base, file_aligned_code_size) } else { Vec::new() };
         let reloc_file_size = if has_reloc {
@@ -557,11 +593,19 @@ impl PeBuilder {
         if has_reloc   { section_count += 1; }
         let size_of_image = section_count * 0x1000;
 
+=======
+        } else {
+            0
+        };
+        // SizeOfImage = headers(0x1000) + .text(0x1000) + [.idata(0x1000)]
+        let size_of_image = if has_imports { 0x3000u32 } else { 0x2000u32 };
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         let mut opt_header = OptionalHeader64::standard_console(self.entry_point, file_aligned_code_size, self.image_base);
         opt_header.size_of_image = size_of_image;
         self.write_struct(&mut buf, &opt_header);
 
         // ---- 6. 数据目录表 (16 × 8 = 128 字节) ----
+<<<<<<< HEAD
         // 索引0=导出, 1=导入, 5=重定位, 10=加载配置
         for i in 0..16 {
             if i == 1 && has_imports {
@@ -577,6 +621,16 @@ impl PeBuilder {
                 let lc_rva = self.code_rva + code_size; // 放在 .text 节末尾
                 let lc_size = 140u32; // IMAGE_LOAD_CONFIG_DIRECTORY64 大小
                 let dd = DataDirectory { virtual_address: lc_rva, size: lc_size };
+=======
+        // 目录索引 1 = 导入表
+        for i in 0..16 {
+            if i == 1 && has_imports {
+                // IMAGE_DIRECTORY_ENTRY_IMPORT = 1
+                let dd = DataDirectory {
+                    virtual_address: self.import_rva,
+                    size: self.import_size,
+                };
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                 self.write_struct(&mut buf, &dd);
             } else {
                 self.write_struct(&mut buf, &DataDirectory::empty());
@@ -585,6 +639,7 @@ impl PeBuilder {
 
         // ---- 7. 节表头 ----
         // .text 节
+<<<<<<< HEAD
         let text_section = SectionHeader::text_section(code_size, self.code_rva, FILE_ALIGNMENT, SECTION_DATA_OFFSET);
         self.write_struct(&mut buf, &text_section);
 
@@ -614,11 +669,45 @@ impl PeBuilder {
         }
         buf.extend_from_slice(&text_buf);
         while (buf.len() as u32) < SECTION_DATA_OFFSET + file_aligned_code_size { buf.push(0); }
+=======
+        let text_section = SectionHeader::text_section(
+            code_size,
+            self.code_rva,
+            FILE_ALIGNMENT,
+            SECTION_DATA_OFFSET,
+        );
+        self.write_struct(&mut buf, &text_section);
+
+        if has_imports {
+            // .idata 节: INITIALIZED_DATA | MEM_READ | MEM_WRITE
+            // IAT 必须可写 (加载器需要写入已解析的函数地址)
+            let idata_raw_offset = SECTION_DATA_OFFSET + file_aligned_code_size;
+            let idata_section = SectionHeader::idata_section(
+                self.import_data.as_ref().unwrap().len() as u32,
+                self.idata_rva,
+                FILE_ALIGNMENT,
+                idata_raw_offset,
+            );
+            self.write_struct(&mut buf, &idata_section);
+        }
+
+        // ---- 8. 头部对齐填充 ----
+        while (buf.len() as u32) < SECTION_DATA_OFFSET {
+            buf.push(0);
+        }
+
+        // ---- 9. .text 节数据 ----
+        buf.extend_from_slice(&self.code);
+        while (buf.len() as u32) < SECTION_DATA_OFFSET + file_aligned_code_size {
+            buf.push(0);
+        }
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 
         // ---- 10. .idata 节数据 (如果有) ----
         if has_imports {
             buf.extend_from_slice(self.import_data.as_ref().unwrap());
             let idata_end = SECTION_DATA_OFFSET + file_aligned_code_size + import_file_size;
+<<<<<<< HEAD
             while (buf.len() as u32) < idata_end { buf.push(0); }
         }
 
@@ -722,6 +811,16 @@ impl PeBuilder {
         (sum & 0xFFFF_FFFF) as u32
     }
 
+=======
+            while (buf.len() as u32) < idata_end {
+                buf.push(0);
+            }
+        }
+
+        buf
+    }
+
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
     /// 内部辅助方法：将结构体以原始字节写入缓冲区
     ///
     /// 利用 `#[repr(C, packed)]` 的内存布局，安全地将结构体序列化为字节，
@@ -775,8 +874,13 @@ mod tests {
 
         let pe = builder.build();
 
+<<<<<<< HEAD
         // 新布局: 头部(512) + .text(512含LoadConfig) + .reloc(512) = 1536
         assert_eq!(pe.len(), 1536);
+=======
+        // 总大小应为头部(512) + 对齐后代码(512) = 1024
+        assert_eq!(pe.len(), 1024);
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 
         // 检查 .text 节中是否包含我们的机器码
         let section_data_start = 0x200;

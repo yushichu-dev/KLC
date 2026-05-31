@@ -1,6 +1,12 @@
+<<<<<<< HEAD
 ﻿-- ============================================================================
 -- KLC:AI Inference Engine v2.0 - AI底座第三阶段（端到端推理）
 -- 升级至 KLC v1.0.3-正式版 语法（原生 math 库 / while 循环 / pub / match）
+=======
+-- ============================================================================
+-- KLC:AI Inference Engine v2.0 - AI底座第三阶段（端到端推理）
+-- 升级至 KLC v0.8.4 语法（原生 math 库 / while 循环 / pub / match）
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 --
 -- 核心模块：
 --   1. KV 缓存（加速自回归生成）
@@ -993,6 +999,7 @@ fn init_vocab() -> [VocabEntry] {
     vocab.push(VocabEntry { token: "x", id: 223 })
     vocab.push(VocabEntry { token: "y", id: 224 })
     vocab.push(VocabEntry { token: "z", id: 225 })
+<<<<<<< HEAD
     -- ── 中文常用汉字和词组 (id 400+) ──
     vocab.push(VocabEntry { token: "你", id: 400 })
     vocab.push(VocabEntry { token: "我", id: 401 })
@@ -1140,6 +1147,8 @@ fn init_vocab() -> [VocabEntry] {
     vocab.push(VocabEntry { token: "力", id: 546 })
     vocab.push(VocabEntry { token: "务", id: 547 })
     vocab.push(VocabEntry { token: "务", id: 548 })
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
     return vocab
 }
 
@@ -1426,7 +1435,10 @@ pub fn klc_generate_creative(prompt: str, max_tokens: i64) -> GenerationResult {
 
 pub fn get_model_config(name: str) -> ModelConfig {
     match name {
+<<<<<<< HEAD
         "mini" | "Mini" | "TestMini" => ModelConfig::mini_test_config()
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         "3B" | "KLC:3B" => ModelConfig::klc_3b_config()
         "9B" | "KLC-POR:9B" => ModelConfig::klc_9b_config()
         "18B" | "KLC-UIT-POR:18B" => ModelConfig::klc_18b_config()
@@ -1456,8 +1468,36 @@ impl WeightLoader {
 -- ══════════════════════════════════════════════════════════════════
 
 fn main() {
+<<<<<<< HEAD
     run_all_tests()
     start_chat()
+=======
+    io.println("")
+    io.println("================================================================")
+    io.println("     KLC:AI Inference Engine v2.0 - 端到端推理引擎")
+    io.println("     KLC v0.8.4 | math 原生库 | while/pub/match")
+    io.println("================================================================")
+    io.println("")
+
+    test_kv_cache()
+    test_lm_head_and_softmax()
+    test_sampling_algorithms()
+    test_transformer_engine()
+    test_autoregressive_generation()
+    test_model_configs_all()
+    test_end_to_end_demo()
+    test_batch_generation()
+    test_weight_loader()
+    test_simple_api()
+
+    io.println("")
+    io.println("+==============================================================+")
+    io.println("|     All 10 tests completed successfully!                     |")
+    io.println("|     Inference Engine v2.0 Ready (KLC v0.8.4)            |")
+    io.println("|     端到端Demo: 文本->BPE->推理->采样->解码->输出 OK   |")
+    io.println("+==============================================================+")
+    exit(0)
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 }
 
 -- ═══════ Test 1: KV 缓存功能验证 ═══════
@@ -1798,6 +1838,7 @@ pub fn test_simple_api() {
 
     io.println("  Test 10: PASSED")
     io.println("")
+<<<<<<< HEAD
 }
 
 -- ══════════════════════════════════════════════════════════════════
@@ -2102,4 +2143,6 @@ pub fn start_chat() {
     io.println("================================================================")
     io.println("  对话结束，共进行了 " ++ turn_count.to_str() ++ " 轮对话。再见！")
     io.println("================================================================")
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 }

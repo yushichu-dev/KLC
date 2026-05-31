@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ﻿//! KLC 主程序 — 编译器 + VM + 工具链入口
+=======
+//! KLC 主程序 — 编译器 + VM + 工具链入口
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 
 mod token;
 mod lexer;
@@ -50,7 +54,11 @@ fn main() {
         "--ide" => gui::run_ide(),
         // ─── 子命令: klc version ───
         "version" | "--version" | "-v" => {
+<<<<<<< HEAD
             println!("KLC v1.0.3-正式版 — Kaleidoscope Language Compiler");
+=======
+            println!("KLC v0.8.4 — Kaleidoscope Language Compiler");
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         }
         // ─── 子命令: klc help ───
         "help" | "--help" | "-h" => print_usage(),
@@ -82,7 +90,11 @@ fn main() {
 }
 
 fn print_usage() {
+<<<<<<< HEAD
     eprintln!("KLC v1.0.3-正式版 — Kaleidoscope Language Compiler");
+=======
+    eprintln!("KLC v0.8.4 — Kaleidoscope Language Compiler");
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
     eprintln!();
     eprintln!("USAGE:");
     eprintln!("    klc <source.klc>                  VM 执行");

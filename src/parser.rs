@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ﻿//! KLC 语法分析器 — Token 流 → AST（递归下降）
+=======
+//! KLC 语法分析器 — Token 流 → AST（递归下降）
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 
 use crate::token::{Token, TokenKind};
 use crate::ast::*;
@@ -47,7 +51,11 @@ impl Parser {
                 Ok(Stmt::Return(None))
             }
             TokenKind::Pub | TokenKind::Any => {
+<<<<<<< HEAD
                 // v1.0.3-正式版: pub 作为可见性修饰符前缀
+=======
+                // v0.8.4: pub 作为可见性修饰符前缀
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                 // pub fn / pub type / pub impl → 跳过 pub，继续解析后续语句
                 self.advance(); // skip pub/any
                 if self.is_at_end() {
@@ -215,11 +223,18 @@ impl Parser {
     }
 
     fn is_assignment(&self) -> bool {
+<<<<<<< HEAD
         // 检查是否为 ident = expr 或 ident.field = expr 或 self.field = expr 模式
         let saved = self.pos;
         let mut i = saved;
         if i < self.tokens.len() && (matches!(&self.tokens[i].kind, TokenKind::Ident(_))
                                      || matches!(&self.tokens[i].kind, TokenKind::Self_)) {
+=======
+        // 检查是否为 ident = expr 或 ident.field = expr 模式
+        let saved = self.pos;
+        let mut i = saved;
+        if i < self.tokens.len() && matches!(&self.tokens[i].kind, TokenKind::Ident(_)) {
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             i += 1;
             // 检查 .field 字段访问
             if i < self.tokens.len() && self.tokens[i].kind == TokenKind::Dot {
@@ -529,7 +544,11 @@ impl Parser {
                 };
                 expr = Expr::Call(func_name, args);
             } else if self.peek().kind == TokenKind::Colon2 {
+<<<<<<< HEAD
                 // Namespace::method 或 Enum::Variant 或 Type::<T>::method(...)
+=======
+                // Namespace::method 调用 (Type::method(...)) 或链式 Type::<T>::method(...)
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                 self.advance(); // 跳过 ::
                 loop {
                     self.skip_generic_params(); // 跳过 ::<T> turbofish
@@ -539,13 +558,20 @@ impl Parser {
                         break;
                     }
                 }
+<<<<<<< HEAD
                 // 提取 :: 前的类型名
+=======
+                // Type::<T>(args) 直接调用（无方法名）
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                 let type_name = match &expr {
                     Expr::Ident(name) => name.clone(),
                     _ => return Err("期望在 :: 前有类型名".into()),
                 };
+<<<<<<< HEAD
 
                 // Type::<T>(args) 直接调用（无方法名）— 如 Option::<i32>(42)
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                 if self.peek().kind == TokenKind::LParen {
                     self.advance(); // skip (
                     let mut args = Vec::new();
@@ -559,12 +585,16 @@ impl Parser {
                     self.consume(TokenKind::RParen)?;
                     expr = Expr::Call(type_name, args);
                 } else {
+<<<<<<< HEAD
                     let method_or_variant = self.consume_ident_str()?;
 
                     // 判断是否为枚举构造器（变体名以大写字母开头，KLC 枚举变体命名惯例）
                     let is_enum_variant = method_or_variant.chars().next()
                         .map_or(false, |c| c.is_uppercase());
 
+=======
+                    let method = self.consume_ident_str()?;
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                     if self.peek().kind == TokenKind::LParen {
                         self.advance(); // 跳过 (
                         let mut args = Vec::new();
@@ -576,6 +606,7 @@ impl Parser {
                             }
                         }
                         self.consume(TokenKind::RParen)?;
+<<<<<<< HEAD
 
                         if is_enum_variant {
                             // 枚举构造器: Type::Variant(args...)
@@ -601,6 +632,22 @@ impl Parser {
                             // 没有 ()，只是 Namespace::ident，暂作为 Ident 处理
                             expr = Expr::Ident(format!("{}::{}", type_name, method_or_variant));
                         }
+=======
+                        // 转换为 Call: Type::method(args...)
+                        let type_name = match &expr {
+                            Expr::Ident(name) => name.clone(),
+                            _ => return Err("期望在 :: 前有类型名".into()),
+                        };
+                        let func_name = format!("{}::{}", type_name, method);
+                        expr = Expr::Call(func_name, args);
+                    } else {
+                        // 没有 ()，只是 Namespace::ident，暂作为 Ident 处理
+                        let type_name = match &expr {
+                            Expr::Ident(name) => name.clone(),
+                            _ => return Err("期望在 :: 前有类型名".into()),
+                        };
+                        expr = Expr::Ident(format!("{}::{}", type_name, method));
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                     }
                 }
             } else if self.peek().kind == TokenKind::LBrace && matches!(&expr, Expr::Ident(name) if name.chars().next().map_or(false, |c| c.is_uppercase())) {
@@ -639,10 +686,13 @@ impl Parser {
                 } else {
                     expr = Expr::FieldAccess(Box::new(expr), field);
                 }
+<<<<<<< HEAD
             } else if self.peek().kind == TokenKind::Question {
                 // ? 运算符: expr? → try { expr } → Result 提前返回
                 self.advance(); // skip ?
                 expr = Expr::Try(Box::new(expr));
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             } else {
                 break;
             }
@@ -663,10 +713,16 @@ impl Parser {
             TokenKind::Null => Ok(Expr::Null),
             TokenKind::Self_ => Ok(Expr::Ident("self".into())),
             TokenKind::Go => {
+<<<<<<< HEAD
                 // go expr → 异步派发到线程池
                 // parse_primary 已消费 Go token
                 let expr = self.parse_expr()?;
                 Ok(Expr::GoSpawn(Box::new(expr)))
+=======
+                // go expr → 暂解析为表达式，不作协程调度
+                // parse_primary 已消费 Go token
+                self.parse_expr()
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             }
             TokenKind::LParen => {
                 let expr = self.parse_expr()?;
@@ -1146,6 +1202,7 @@ impl Parser {
                     _ => Err("模式中 - 后期望数字".into()),
                 }
             }
+<<<<<<< HEAD
             TokenKind::Ident(name) => {
                 self.advance();
                 // 检查是否为 Type::Variant 枚举变体模式
@@ -1159,6 +1216,9 @@ impl Parser {
                     Ok(MatchPattern::Variable(name))
                 }
             }
+=======
+            TokenKind::Ident(name) => { self.advance(); Ok(MatchPattern::Variable(name)) }
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             _ => Err(format!("模式中出现意外 Token: {:?}", self.peek().kind)),
         }
     }

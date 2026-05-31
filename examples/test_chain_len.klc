@@ -1,0 +1,64 @@
+struct Data {
+    values: [f64]
+}
+
+impl Data {
+    fn make(vals: [f64]) -> Data = Data { values: vals }
+    fn size(self) -> i64 = self.values.len()
+    fn first(self) -> f64 = self.values[0]
+}
+
+struct Processor {
+    data: Data
+    scale: f64
+}
+
+impl Processor {
+    fn make(d: Data, s: f64) -> Processor = Processor { data: d, scale: s }
+    
+    fn process(self, input: [f64]) -> [f64] {
+        let n = input.len()
+        let mut result = []
+        let mut i = 0
+        while i < n {
+            let val = input[i] * self.scale
+            result.push(val)
+            i = i + 1
+        }
+        return result
+    }
+    
+    fn run_chain(self) -> f64 {
+        let d = self.data
+        let n = d.values.len()
+        let mut sum = 0.0
+        let mut i = 0
+        while i < n {
+            sum = sum + d.values[i]
+            i = i + 1
+        }
+        return sum * self.scale
+    }
+}
+
+fn analyze(data: [f64], scale: f64) -> f64 {
+    let d = Data::make(data)
+    let p = Processor::make(d, scale)
+    let result = p.run_chain()
+    return result
+}
+
+fn main() {
+    let data = [1.0, 2.0, 3.0, 4.0, 5.0]
+    let r = analyze(data, 2.0)
+    io.println("result: " ++ r.to_str())
+    
+    let d = Data::make([10.0, 20.0])
+    io.println("size: " ++ d.size().to_str())
+    io.println("first: " ++ d.first().to_str())
+    
+    let p = Processor::make(d, 1.5)
+    let out = p.process([1.0, 2.0, 3.0])
+    io.println("out len: " ++ out.len().to_str())
+    io.println("out[0]: " ++ out[0].to_str())
+}

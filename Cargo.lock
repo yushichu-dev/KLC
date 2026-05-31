@@ -62,7 +62,11 @@ dependencies = [
 
 [[package]]
 name = "klc"
+<<<<<<< HEAD
 version = "1.0.3"
+=======
+version = "0.8.4"
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 dependencies = [
  "embed-resource",
 ]

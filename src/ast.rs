@@ -59,6 +59,7 @@ pub enum Expr {
     /// 尾调用 — TCO 优化 pass 将尾位置的 Call 标记为 TailCall
     /// 代码生成时使用 jmp 替代 call，消除函数调用栈开销
     TailCall(String, Vec<Expr>),
+<<<<<<< HEAD
     /// 枚举构造器: TypeName::Variant(arg1, arg2, ...)
     /// type_name: 枚举类型名称, variant: 变体名称, args: 构造参数
     EnumConstructor {
@@ -76,6 +77,8 @@ pub enum Expr {
     Try(Box<Expr>),
     /// go 并发调度：go fn(args) → 将函数调用派发到线程池异步执行
     GoSpawn(Box<Expr>),
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 }
 
 /// 函数参数

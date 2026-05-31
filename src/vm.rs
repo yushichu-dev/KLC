@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ﻿//! KLC 虚拟机 — 高性能字节码执行引擎 (v1.0.3-正式版 optimized)
+=======
+//! KLC 虚拟机 — 高性能字节码执行引擎 (v0.8.4 optimized)
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 #![allow(dead_code)]
 //!
 //! 优化清单:
@@ -13,14 +17,22 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
+<<<<<<< HEAD
 use std::sync::Mutex;
 use std::thread::{self, available_parallelism};
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 use crate::bytecode::*;
 
 // ============================================================================
 // 输出捕获（用于 IDE GUI 中重定向 Print/PrintLn 输出）
 // ============================================================================
 
+<<<<<<< HEAD
+=======
+use std::sync::Mutex;
+
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 /// 全局输出捕获缓冲区
 static OUTPUT_CAPTURE: Mutex<Option<RefCell<String>>> = Mutex::new(None);
 
@@ -144,6 +156,7 @@ struct CallFrame {
     return_func: Option<usize>, // 使用函数索引替代 String 查找
 }
 
+<<<<<<< HEAD
 
 // ============================================================================
 // 并行计算辅助函数 — 用于矩阵运算的自适应并行
@@ -164,6 +177,8 @@ fn should_parallelize(total_elements: usize) -> bool {
     total_elements > 256
 }
 
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 // ============================================================================
 // KLC 虚拟机 (性能优化版)
 // ============================================================================
@@ -443,6 +458,7 @@ impl VM {
                 println!("{}", val);
                 write_to_capture(&(val.to_string() + "\n"));
             }
+<<<<<<< HEAD
             Instruction::ReadLine => {
                 let mut buf = String::new();
                 let result = std::io::stdin().read_line(&mut buf);
@@ -456,6 +472,8 @@ impl VM {
                 };
                 self.stack.push(Value::String(line));
             }
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             Instruction::RegFn(alias, real) => {
                 if let Some(idx) = self.func_names.iter().position(|n| n == real) {
                     self.fn_aliases.insert(alias.clone(), idx);
@@ -481,6 +499,7 @@ impl VM {
                     _ => self.stack.push(Value::Null),
                 }
             }
+<<<<<<< HEAD
             Instruction::EnumNew(type_name, variant, field_count) => {
                 // 创建枚举值: 栈上有 field_count 个值，弹出并组装为 Enum
                 let mut fields = Vec::with_capacity(*field_count);
@@ -550,6 +569,11 @@ impl VM {
                 self.should_halt = true;
             }
             _ => {} // Spawn/WaitAll 等预留指令：暂无处理
+=======
+            Instruction::Halt => {
+                self.should_halt = true;
+            }
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         }
         Ok(())
     }
@@ -641,7 +665,10 @@ impl VM {
             (Value::Integer(x), Value::Float(y)) => f(&Value::Float(*x as f64), &Value::Float(*y)),
             (Value::Float(x), Value::Integer(y)) => f(&Value::Float(*x), &Value::Float(*y as f64)),
             (Value::String(x), Value::String(y)) => x < y,
+<<<<<<< HEAD
             (Value::Char(x), Value::Char(y)) => f(&Value::Char(*x), &Value::Char(*y)),
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             _ => false,
         };
         self.stack.push(Value::Bool(result));
@@ -769,6 +796,7 @@ impl VM {
             return Ok(());
         }
 
+<<<<<<< HEAD
         // Some / None — Option 枚举构造器
         if name == "Some" && arg_count == 1 {
             let val = self.stack.pop(); // 取出参数值
@@ -776,12 +804,19 @@ impl VM {
                 "Option".into(), "Some".into(), vec![val]
             )))));
             return Ok(());
+=======
+        // Some / None
+        if name == "Some" && arg_count == 1 {
+            // 栈顶不动，包装为 Enum
+            return Ok(()); // TODO: 直接包装
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         }
         if name == "None" && arg_count == 0 {
             self.stack.push(Value::Enum(Rc::new(RefCell::new(("Option".into(), "None".into(), vec![])))));
             return Ok(());
         }
 
+<<<<<<< HEAD
         // Ok / Err — Result 枚举构造器
         if name == "Ok" && arg_count == 1 {
             let val = self.stack.pop();
@@ -798,6 +833,8 @@ impl VM {
             return Ok(());
         }
 
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         // channel
         if name == "channel" {
             for _ in 0..arg_count { self.stack.pop(); }
@@ -825,6 +862,7 @@ impl VM {
             return Ok(());
         }
 
+<<<<<<< HEAD
         // ─── std::io 标准库 — 内置 IO 函数 ───
         if name == "read_line" || name == "std::io::read_line" || name == "io::read_line" {
             for _ in 0..arg_count { self.stack.pop(); }
@@ -856,6 +894,8 @@ impl VM {
             return self.run_transformer_func(func, arg_count);
         }
 
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         // ─── math 标准库 — 高性能内联 ───
         if name.starts_with("math::") || name.starts_with("math.") {
             let func = name.strip_prefix("math::").or(name.strip_prefix("math."))
@@ -888,8 +928,11 @@ impl VM {
                 Value::Enum(e) => e.borrow().1.clone(),
                 Value::Map(_) => "Map".to_string(),
                 Value::Function(_) => "Function".to_string(),
+<<<<<<< HEAD
                 Value::Matrix(_) => "Matrix".to_string(),
                 Value::TransformerModel(_) => "TransformerModel".to_string(),
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
             };
             self.stack.push(Value::String(type_name.to_string()));
             return Ok(());
@@ -935,8 +978,12 @@ impl VM {
             let s = self.stack.pop();
             match (&s, &idx) {
                 (Value::String(s), Value::Integer(i)) => {
+<<<<<<< HEAD
                     let clen = s.chars().count();
                     if *i >= 0 && (*i as usize) < clen {
+=======
+                    if *i >= 0 && (*i as usize) < s.len() {
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                         self.stack.push(Value::Char(s.chars().nth(*i as usize).unwrap_or('\0')));
                     } else {
                         self.stack.push(Value::Null);
@@ -960,7 +1007,11 @@ impl VM {
         if name == "str_len" && arg_count == 1 {
             let val = self.stack.pop();
             match val {
+<<<<<<< HEAD
                 Value::String(s) => self.stack.push(Value::Integer(s.chars().count() as i64)),
+=======
+                Value::String(s) => self.stack.push(Value::Integer(s.len() as i64)),
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                 _ => self.stack.push(Value::Integer(0)),
             }
             return Ok(());
@@ -1184,6 +1235,7 @@ impl VM {
             // 字符串方法
             if is_string {
                 match name {
+<<<<<<< HEAD
                     // 字符串长度 — "hello".len() → 5
                     "len" if arg_count == 1 => {
                         let val = self.stack.pop();
@@ -1204,6 +1256,8 @@ impl VM {
                         }
                         return Ok(());
                     }
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                     "trim" if arg_count == 1 => {
                         let val = self.stack.pop();
                         if let Value::String(s) = val {
@@ -1211,6 +1265,7 @@ impl VM {
                         }
                         return Ok(());
                     }
+<<<<<<< HEAD
                     // 左侧去空格 — "  hello".trim_start() → "hello"
                     "trim_start" | "trim_left" if arg_count == 1 => {
                         let val = self.stack.pop();
@@ -1227,6 +1282,8 @@ impl VM {
                         }
                         return Ok(());
                     }
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                     "to_upper" | "to_uppercase" if arg_count == 1 => {
                         let val = self.stack.pop();
                         if let Value::String(s) = val {
@@ -1263,6 +1320,7 @@ impl VM {
                         }
                         return Ok(());
                     }
+<<<<<<< HEAD
                     // 子串查找 — "hello".find("ll") → 2 (字符索引)
                     "find" if arg_count == 2 => {
                         let needle = self.stack.pop();
@@ -1346,6 +1404,8 @@ impl VM {
                         }
                         return Ok(());
                     }
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                     "split" if arg_count == 2 => {
                         let sep = self.stack.pop();
                         let s = self.stack.pop();
@@ -1512,6 +1572,7 @@ impl VM {
         Err(format!("Function '{}' not found", name))
     }
 
+<<<<<<< HEAD
     // ─── io:: 文件 IO 标准库（零依赖） ───
     //
     // KLC 文件 IO API:
@@ -2849,6 +2910,8 @@ impl VM {
         Ok(())
     }
 
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
     // ─── math 标准库 — 高性能内联（无闭包、无 format!） ───
 
     #[inline(always)]

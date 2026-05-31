@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ﻿//! KLC 代码格式化器 — AST 驱动的代码美化工具
+=======
+//! KLC 代码格式化器 — AST 驱动的代码美化工具
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 //!
 //! `klc fmt` 子命令的核心实现。通过解析 AST 后重新生成代码，
 //! 实现统一的代码风格：自动缩进、空格、换行、对齐。
@@ -554,6 +558,7 @@ impl Formatter {
                 }
                 self.emit(")");
             }
+<<<<<<< HEAD
 
             // v1.0.3-正式版 新增: 枚举构造器
             Expr::EnumConstructor { type_name, variant, args } => {
@@ -591,6 +596,8 @@ impl Formatter {
                 self.emit("go ");
                 self.format_expr(inner);
             }
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         }
     }
 

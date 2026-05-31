@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ﻿//! KLC 字节码生成器 — AST → Bytecode
+=======
+//! KLC 字节码生成器 — AST → Bytecode
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
 
 use crate::ast::*;
 use crate::bytecode::*;
@@ -57,7 +61,11 @@ impl Codegen {
                             let prefixed = format!("{}::{}", type_name, name);
                             let compiled2 = cg.compile_function(&prefixed, params, body)?;
                             functions.push(compiled2);
+<<<<<<< HEAD
                             // 注册 Type.method 名称（关联函数写法2）— v1.0.3-正式版 双写法兼容
+=======
+                            // 注册 Type.method 名称（关联函数写法2）— v0.8.4 双写法兼容
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                             let dotted = format!("{}.{}", type_name, name);
                             let compiled3 = cg.compile_function(&dotted, params, body)?;
                             functions.push(compiled3);
@@ -179,7 +187,11 @@ impl Codegen {
             }
             Stmt::For { var, iterable, body } => {
                 // for var in iterable { body }
+<<<<<<< HEAD
                 // v1.0.3-正式版 增强: 支持 range start..end、数组遍历
+=======
+                // v0.8.4 增强: 支持 range start..end、数组遍历
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                 self.compile_expr(iterable, code)?;
                 // iterable 求值后栈顶为 range/array 值
                 // 使用 __for_iter / __for_next 迭代器模式
@@ -342,6 +354,7 @@ impl Codegen {
                 if name == "to_str" && args.len() == 1 {
                     self.compile_expr(&args[0], code)?;
                     code.push(Instruction::ToString);
+<<<<<<< HEAD
                 } else if name == "read_line" && args.is_empty() {
                     code.push(Instruction::ReadLine);
                 } else if name == "Ok" && args.len() == 1 {
@@ -359,6 +372,8 @@ impl Codegen {
                 } else if name == "None" && args.is_empty() {
                     // Option::None 构造器 — 编译为 EnumNew
                     code.push(Instruction::EnumNew("Option".into(), "None".into(), 0));
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                 } else {
                     for arg in args {
                         self.compile_expr(arg, code)?;
@@ -459,6 +474,7 @@ impl Codegen {
                     }
 
                     // 构造器模式：匹配成功后绑定/解包变量
+<<<<<<< HEAD
                     // 枚举变体如 Some(val), Ok(val), Err(msg) → 提取字段数据
                     if let Some(bind_name) = &arm.bind {
                         if let MatchPattern::Variable(name) = &arm.pattern {
@@ -473,6 +489,17 @@ impl Codegen {
                                     code.push(Instruction::EnumGet(0));
                                     code.push(Instruction::InitVar(bind_name.clone()));
                                 }
+=======
+                    if let Some(bind_name) = &arm.bind {
+                        if let MatchPattern::Variable(name) = &arm.pattern {
+                            if name == "Some" {
+                                code.push(Instruction::Load(tmp_var.clone()));
+                                code.push(Instruction::EnumGet(0));
+                                code.push(Instruction::InitVar(bind_name.clone()));
+                            } else if name == "None" {
+                                code.push(Instruction::Load(tmp_var.clone()));
+                                code.push(Instruction::InitVar(bind_name.clone()));
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                             }
                         }
                     }
@@ -524,6 +551,7 @@ impl Codegen {
                 }
                 code.push(Instruction::Call(name.clone(), args.len()));
             }
+<<<<<<< HEAD
             Expr::EnumConstructor { type_name, variant, args } => {
                 // 编译枚举构造器: Enum::Variant(arg1, arg2, ...) → EnumNew 指令
                 // 栈: arg1, arg2, ... → Enum { type, variant, [arg1, arg2, ...] }
@@ -579,6 +607,8 @@ impl Codegen {
                     }
                 }
             }
+=======
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
         }
         Ok(())
     }
@@ -592,6 +622,7 @@ impl Codegen {
                 code.push(Instruction::Eq);
             }
             MatchPattern::Variable(name) => {
+<<<<<<< HEAD
                 // 判断是否为枚举变体模式（以大写字母开头的名称）
                 // 如 Some, None, Ok, Err, Red, Green, Blue 等
                 let is_variant = name.chars().next().map_or(false, |c| c.is_uppercase());
@@ -605,6 +636,16 @@ impl Codegen {
                     code.push(Instruction::Const(true_idx));
                 } else {
                     // 普通变量: 始终匹配, 绑定值到变量名（catch-all）
+=======
+                if name == "None" {
+                    code.push(Instruction::Load(val_var.to_string()));
+                    code.push(Instruction::IsVariant("None".into()));
+                } else if name == "Some" {
+                    code.push(Instruction::Load(val_var.to_string()));
+                    code.push(Instruction::IsVariant("Some".into()));
+                } else {
+                    // 普通变量: 始终匹配, 绑定值到变量名
+>>>>>>> 1e7cd86eb6ec8e464f8cb02b273e397c600e8c20
                     let bind_name = bind.unwrap_or(name);
                     code.push(Instruction::Load(val_var.to_string()));
                     code.push(Instruction::InitVar(bind_name.to_string()));

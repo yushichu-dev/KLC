@@ -1,0 +1,60 @@
+-- 最简化版 AI 库测试
+mod simple_test
+
+-- 简单张量类型
+type SimpleTensor {
+    value: f64
+}
+
+impl SimpleTensor {
+    fn add(self, other: SimpleTensor) -> SimpleTensor = SimpleTensor { value: self.value + other.value }
+    fn to_str(self) -> str = self.value.to_str()
+}
+
+-- 简单激活函数
+fn simple_relu(x: f64) -> f64 = if x > 0.0 { x } else { 0.0 }
+fn simple_sigmoid(x: f64) -> f64 = if x >= 0.0 { 1.0 / (1.0 + 1.0/(1.0 + x*0.5)) } else { 1.0 / (1.0 + (1.0 - x*0.5)) }
+
+-- 模型配置
+type SimpleConfig {
+    name: str
+    size: i64
+}
+
+impl SimpleConfig {
+    fn small() -> SimpleConfig = SimpleConfig { name: "Small", size: 100 }
+    fn medium() -> SimpleConfig = SimpleConfig { name: "Medium", size: 1000 }
+}
+
+-- 主测试程序
+fn main() {
+    io.println("=== 最简化版 AI 库测试 ===")
+    io.println("")
+    
+    -- 测试张量
+    io.println("1. 张量操作测试:")
+    let a = SimpleTensor { value: 3.0 }
+    let b = SimpleTensor { value: 4.0 }
+    let c = a.add(b)
+    io.println("   SimpleTensor(3.0) + SimpleTensor(4.0) = " ++ c.to_str())
+    
+    -- 测试激活函数
+    io.println("")
+    io.println("2. 激活函数测试:")
+    let x = -1.5
+    io.println("   x = " ++ x.to_str())
+    io.println("   ReLU(x) = " ++ simple_relu(x).to_str())
+    io.println("   Sigmoid(x) = " ++ simple_sigmoid(x).to_str())
+    
+    -- 测试模型配置
+    io.println("")
+    io.println("3. 模型配置测试:")
+    let small = SimpleConfig::small()
+    let medium = SimpleConfig::medium()
+    io.println("   Small model: " ++ small.name ++ ", size=" ++ small.size.to_str())
+    io.println("   Medium model: " ++ medium.name ++ ", size=" ++ medium.size.to_str())
+    
+    io.println("")
+    io.println("=== 所有测试通过! ===")
+    exit(0)
+}

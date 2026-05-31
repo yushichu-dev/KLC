@@ -1,0 +1,35 @@
+struct Inner {
+    data: [i64]
+}
+
+impl Inner {
+    fn make(d: [i64]) -> Inner = Inner { data: d }
+    
+    fn get_size(self) -> i64 = self.data.len()
+}
+
+fn process_items(items: [Inner]) -> i64 {
+    let mut sum = 0
+    let mut i = 0
+    while i < items.len() {
+        sum = sum + items[i].get_size()
+        i = i + 1
+    }
+    return sum
+}
+
+fn main() {
+    let items = [Inner::make([1,2]), Inner::make([3,4,5])]
+    io.println("total: " ++ process_items(items).to_str())
+    
+    let arr = [10, 20, 30]
+    io.println("arr len: " ++ arr.len().to_str())
+    arr.push(40)
+    io.println("pushed: " ++ arr.len().to_str())
+    
+    -- test with function returning array
+    let result = get_result()
+    io.println("result len: " ++ result.len().to_str())
+}
+
+fn get_result() -> [i64] = [100, 200, 300]

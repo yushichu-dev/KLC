@@ -1,0 +1,18 @@
+type Inner {
+    x: i64
+}
+
+type Outer {
+    inner: Inner
+}
+
+impl Outer {
+    fn show(self) -> str {
+        return self.inner.x.to_str()
+    }
+}
+
+fn main() {
+    let o = Outer { inner: Inner { x: 42 } }
+    io.println(o.show())
+}

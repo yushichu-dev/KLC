@@ -1,0 +1,15 @@
+-- 最小测试
+mod t1
+
+type Point {
+    x: f64
+    y: f64
+}
+
+fn main() {
+    let p = Point { x: 1.0, y: 2.0 }
+    io.println("x=" ++ p.x.to_str())
+    io.println("y=" ++ p.y.to_str())
+    io.println("OK")
+    exit(0)
+}
