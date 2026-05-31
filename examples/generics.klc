@@ -1,0 +1,114 @@
+-- generics.klc — 展示 KLC 泛型系统
+
+mod main
+use io
+
+--- 泛型栈
+type Stack<T> {
+    items: [T]
+}
+
+impl<T> Stack<T> {
+    fn new() -> Stack<T> = Stack { items: [] }
+
+    fn push(self mut, item: T) {
+        self.items.push(item)
+    }
+
+    fn pop(self mut) -> Option<T> {
+        if self.items.is_empty() { return None }
+        return Some(self.items.pop())
+    }
+
+    fn peek(self) -> Option<borrow T> {
+        if self.items.is_empty() { return None }
+        return Some(self.items[self.items.len() - 1])
+    }
+
+    fn len(self) -> u64 = self.items.len()
+}
+
+--- 泛型键值对
+type Pair<K, V> {
+    key: K
+    value: V
+}
+
+impl<K, V> Pair<K, V> {
+    fn describe(self) -> str = "(" ++ self.key.to_str() ++ " => " ++ self.value.to_str() ++ ")"
+}
+
+--- Trait 定义
+trait Summary {
+    fn summarize(self) -> str
+}
+
+impl Summary for i32 {
+    fn summarize(self) -> str = "int(" ++ self.to_str() ++ ")"
+}
+
+impl Summary for str {
+    fn summarize(self) -> str = "str(" ++ self ++ ")"
+}
+
+--- 泛型约束
+fn print_summary<T: Summary>(item: borrow T) {
+    io.println(item.summarize())
+}
+
+--- 泛型算法：二分查找
+fn binary_search<T: Ord>(slice: borrow [T], target: borrow T) -> Option<i32> {
+    let mut left: i32 = 0
+    let mut right: i32 = slice.len() as i32 - 1
+
+    while left <= right {
+        let mid = (left + right) / 2
+        match slice[mid].compare(target) {
+            -1 => left = mid + 1
+            0 => return Some(mid)
+            1 => right = mid - 1
+        }
+    }
+    return None
+}
+
+fn main() {
+    io.println("=== KLC Generics Demo ===\n")
+
+    -- 1. 泛型栈
+    io.println("-- 1. Generic Stack<i32> --")
+    let mut stack = Stack::<i32>::new()
+    stack.push(1)
+    stack.push(2)
+    stack.push(3)
+
+    while stack.len() > 0 {
+        match stack.pop() {
+            Some(val) => io.println("popped: " ++ val.to_str())
+            None => {}
+        }
+    }
+
+    -- 2. 泛型键值对
+    io.println("\n-- 2. Generic Pair --")
+    let p1 = Pair { key: "user_id", value: 42 }
+    let p2 = Pair { key: 10, value: "admin" }
+    io.println(p1.describe())
+    io.println(p2.describe())
+
+    -- 3. Trait 约束
+    io.println("\n-- 3. Trait Bounds --")
+    print_summary(100)
+    print_summary("hello KLC")
+
+    -- 4. 泛型算法
+    io.println("\n-- 4. Binary Search --")
+    let sorted = [1, 3, 5, 7, 9, 11, 13, 15]
+    let target = 7
+    match binary_search(sorted, target) {
+        Some(idx) => io.println("Found " ++ target.to_str() ++ " at index " ++ idx.to_str())
+        None => io.println("Not found: " ++ target.to_str())
+    }
+
+    io.println("\n=== Generics demo complete! ===")
+}

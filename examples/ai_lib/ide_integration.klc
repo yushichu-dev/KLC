@@ -1,0 +1,1610 @@
+-- ============================================================================
+-- KLC:3B IDE 集成接口
+-- 版本: v1.0.0
+--
+-- 功能：
+--   1. DLL/静态库导出接口，对接 KLC Windows IDE
+--   2. IDE 内 AI 对话功能（Chat 模式）
+--   3. KLC 代码智能补全（Code Completion）
+--   4. 语法纠错与代码优化建议（Lint/Fix）
+--   5. 代码解释与注释生成（Explain）
+--   6. 实时流式输出支持
+--
+-- 架构设计：
+--   ┌─────────────────────────────────────────────────────┐
+--   │                    KLC IDE                          │
+--   │  ┌──────────┐  ┌──────────┐  ┌──────────┐          │
+--   │  │ 编辑器    │  │ 终端     │  │ 文件管理 │          │
+--   │  └────┬─────┘  └────┬─────┘  └────▲─────┘          │
+--   │       │             │            │                  │
+--   │  ═════╪═════════════╪════════════╪══════════        │
+--   │       ▼             ▼            │                  │
+--   │  ┌──────────────────────────────┴─────────┐        │
+--   │  │         IDE Integration Layer           │        │
+--   │  │  (ide_integration.klc)                   │        │
+--   │  └──────────────────┬─────────────────────┘        │
+--   │                     │                              │
+--   │  ┌──────────────────▼─────────────────────┐        │
+--   │  │      Inference Engine (klc_3b_infer)    │        │
+--   │  └────────────────────────────────────────┘        │
+--   └─────────────────────────────────────────────────────┘
+--
+-- 使用方式：
+--   -- 初始化
+--   let ide = KLCIDEIntegration::new("models/", "tokenizer.json")
+--   ide.initialize()
+--
+--   -- AI 对话
+--   let response = ide.chat("什么是KLC编程语言？")
+--
+--   -- 代码补全
+--   let completions = ide.code_complete("fn main() { pri", cursor_pos=20)
+--
+--   -- 语法检查
+--   let issues = ide.lint_code(code_text)
+-- ============================================================================
+
+mod ide_integration
+
+use klc_3b_infer
+
+-- |===========================================================================|
+-- |                        常量定义                                           |
+-- |===========================================================================|
+
+--- 版本信息
+let IDE_INTEGRATION_VERSION = "1.0.0"
+let IDE_API_VERSION = 1
+
+--- 默认配置路径
+let DEFAULT_MODEL_DIR = "./models"
+let DEFAULT_TOKENIZER_FILE = "tokenizer.json"
+let DEFAULT_WEIGHT_FILE = "klc_3b.klcw"
+
+--- 功能标志位
+let FEATURE_CHAT = 0x01              -- AI 对话
+let FEATURE_CODE_COMPLETE = 0x02     -- 代码补全
+let FEATURE_LINT = 0x04              -- 语法检查
+let FEATURE_EXPLAIN = 0x08           -- 代码解释
+let FEATURE_FIX = 0x10               -- 自动修复
+let FEATURE_TRANSLATE = 0x20         -- 语言翻译
+let FEATURE_ALL = 0xFF              -- 所有功能
+
+--- 返回码
+let SUCCESS = 0
+let ERR_NOT_INITIALIZED = -1
+let ERR_ENGINE_NOT_LOADED = -2
+let ERR_INVALID_PARAM = -3
+let ERR_TIMEOUT = -4
+let ERR_CANCELLED = -5
+
+-- |===========================================================================|
+-- |                        数据结构定义                                         |
+-- |===========================================================================|
+
+--- IDE 集成状态
+type IntegrationState {
+    is_initialized: bool
+    is_engine_ready: bool
+    current_features: i64   -- 已启用的功能标志
+    last_error: str
+}
+
+--- 补全候选项
+type CompletionItem {
+    text: str                -- 补全文本
+    display_text: str        -- 显示文本（可能包含类型信息）
+    kind: str                -- 类型: "keyword", "function", "variable", etc.
+    documentation: str?      -- 可选的文档说明
+    insert_text: str?        -- 插入文本（可能包含占位符）
+    confidence: f64          -- 置信度 (0-1)
+}
+
+--- 补全结果
+type CompletionResult {
+    items: [CompletionItem] -- 候选列表
+    start_offset: i64       -- 补全起始位置
+    end_offset: i64         -- 补全结束位置
+    is_incomplete: bool      -- 是否有更多结果
+}
+
+--- Lint 问题
+type LintIssue {
+    severity: str            -- "error", "warning", "info", "hint"
+    line: i64                -- 行号
+    column: i64              -- 列号
+    message: str             -- 问题描述
+    rule_id: str?            -- 规则 ID
+    suggestion: str?         -- 修复建议
+    auto_fixable: bool       -- 是否可自动修复
+}
+
+--- Lint 结果
+type LintResult {
+    issues: [LintIssue]      -- 问题列表
+    error_count: i64         -- 错误数
+    warning_count: i64       -- 警告数
+    source: str?             -- 源代码（带标记）
+}
+
+--- 代码解释结果
+type ExplainResult {
+    summary: str             -- 简要概述
+    detailed: str            -- 详细说明
+    complexity: str?         -- 复杂度分析
+    suggestions: [str]?      -- 改进建议
+}
+
+--- API 响应（通用格式）
+type APIResponse {
+    success: bool            -- 是否成功
+    code: i64               -- 返回码
+    data: any?               -- 数据负载
+    error_message: str?      -- 错误消息
+    processing_time_ms: f64  -- 处理耗时
+}
+
+-- |===========================================================================|
+-- |                     IDE 集成主类                                            |
+-- |===========================================================================|
+
+--- KLC IDE 集成接口
+---
+--- 这是 IDE 与推理引擎之间的桥梁，
+--- 提供高级 API 用于编辑器功能的 AI 增强。
+type KLCIDEIntegration {
+    --- ═══ 核心组件 ═══
+    engine: KLC3BInferenceEngine?     -- 推理引擎实例
+    state: IntegrationState           -- 当前状态
+
+    --- ═══ 路径配置 ═══
+    model_dir: str                    -- 模型目录
+    tokenizer_path: str              -- 分词器路径
+    weight_path: str                 -- 权重文件路径
+
+    --- ═══ 会话管理 ═══
+    chat_sessions: {str: ConversationHistory}  -- 多个聊天会话
+    active_session: str               -- 当前活动会话 ID
+
+    --- ═══ 缓存与优化 ═══
+    completion_cache: {str: CompletionResult}  -- 补全缓存
+    lint_cache: {str: LintResult}             -- lint 缓存
+
+    --- ═══ 配置 ═══
+    default_generation_config: GenerationConfig
+    max_response_tokens: i64          -- 最大回复 token 数
+    timeout_ms: i64                  -- 超时时间（毫秒）
+
+    --- ═══ 回调（用于异步通知）═══
+    on_stream_chunk: ((StreamChunk) -> ())?
+    on_progress: ((i64, i64) -> ())?  -- (current, total)
+    on_error: ((str) -> ())?
+}
+
+impl KLCIDEIntegration {
+    --- 创建 IDE 集成实例
+    pub fn new(
+        model_dir: str = DEFAULT_MODEL_DIR,
+        tokenizer_file: str = DEFAULT_TOKENIZER_FILE
+    ) -> KLCIDEIntegration {
+        return KLCIDEIntegration {
+            engine: null,
+            state: IntegrationState {
+                is_initialized: false,
+                is_engine_ready: false,
+                current_features: 0,
+                last_error: ""
+            },
+            model_dir: model_dir,
+            tokenizer_path: model_dir ++ "/" ++ tokenizer_file,
+            weight_path: model_dir ++ "/" ++ DEFAULT_WEIGHT_FILE,
+            chat_sessions: {},
+            active_session: "default",
+            completion_cache: {},
+            lint_cache: {},
+            default_generation_config: create_default_ide_config(),
+            max_response_tokens: 2048,
+            timeout_ms: 30000,  -- 30 秒超时
+            on_stream_chunk: null,
+            on_progress: null,
+            on_error: null
+        }
+    }
+
+    -- |=================== 初始化与管理 ===================|
+
+    --- 初始化集成模块
+    ---
+    --- 加载模型、初始化引擎、准备所有子系统。
+    ---
+    --- 参数：
+    ---   features: 要启用的功能标志位（FEATURE_CHAT | FEATURE_CODE_COMPLETE 等）
+    ---
+    --- 返回：APIResponse
+    pub fn initialize(self mut, features: i64 = FEATURE_ALL) -> APIResponse {
+        let start_time = get_time_ms()
+
+        io.println("KLC IDE 集成初始化...")
+        io.println("  模型目录: " ++ self.model_dir)
+        io.println("  权重文件: " ++ self.weight_path)
+
+        -- Step 1: 创建并加载推理引擎
+        io.println("  步骤 1/3: 加载推理引擎...")
+
+        self.engine = KLC3BInferenceEngine::new(
+            self.weight_path,
+            self.tokenizer_path
+        )
+
+        match self.engine {
+            null => {
+                self.state.last_error = "无法创建推理引擎"
+                return error_response(ERR_ENGINE_NOT_LOADED, self.state.last_error)
+            },
+            _ => {
+                -- 尝试加载模型
+                if not file_exists(self.weight_path) {
+                    io.println("  ⚠ 权重文件未找到，使用演示模式")
+                    -- 演示模式：创建轻量级模拟引擎
+                    setup_demo_engine(&mut self)
+                } else {
+                    self.engine.unwrap().load_model()
+                }
+            }
+        }
+
+        io.println("  ✓ 推理引擎就绪")
+
+        -- Step 2: 启用请求的功能
+        self.state.current_features = features
+        io.println("  步骤 2/3: 功能启用: " ++
+                   format_features(features))
+
+        -- Step 3: 创建默认会话
+        self.chat_sessions["default"] = ConversationHistory::new(max_rounds=20)
+        self.active_session = "default"
+
+        -- 设置默认系统提示词
+        self.setup_system_prompts()
+
+        self.state.is_initialized = true
+        self.state.is_engine_ready = true
+
+        let elapsed = get_time_ms() - start_time
+
+        io.println("  ✓ 初始化完成 (" ++ elapsed.to_str() ++ " ms)")
+        io.println()
+
+        return success_response({
+            "version": IDE_INTEGRATION_VERSION,
+            "features": features,
+            "model_loaded": self.state.is_engine_ready,
+            "elapsed_ms": elapsed
+        })
+    }
+
+    --- 关闭集成模块（释放资源）
+    pub fn shutdown(self mut) -> APIResponse {
+        io.println("关闭 KLC IDE 集成...")
+
+        if self.engine != null {
+            self.engine.unwrap().unload_model()
+            self.engine = null
+        }
+
+        self.chat_sessions.clear()
+        self.completion_cache.clear()
+        self.lint_cache.clear()
+
+        self.state.is_initialized = false
+        self.state.is_engine_ready = false
+
+        io.println("✓ 已关闭")
+        return success_response(null)
+    }
+
+    --- 检查是否已就绪
+    pub fn check_ready(self) -> APIResponse {
+        if not self.state.is_initialized {
+            return error_response(ERR_NOT_INITIALIZED, "集成模块未初始化")
+        }
+        if not self.state.is_engine_ready or self.engine == null {
+            return error_response(ERR_ENGINE_NOT_LOADED, "引擎未就绪")
+        }
+        return success_response({
+            "state": "ready",
+            "features": self.state.current_features,
+            "active_session": self.active_session
+        })
+    }
+
+    -- |=================== AI 对话功能 ===================|
+
+    --- 发送消息进行对话
+    ---
+    --- 这是最常用的方法，用于 IDE 中的 AI 助手面板。
+    ---
+    --- 参数：
+    ---   message: 用户输入的消息
+    ---   session_id: 会话 ID（可选，默认使用当前会话）
+    ---   stream: 是否流式输出
+    ---
+    --- 返回：AI 的回复文本
+    pub fn chat(
+        self mut,
+        message: str,
+        session_id: str = "",
+        stream: bool = false
+    ) -> APIResponse {
+        -- 就绪检查
+        let ready_check = self.check_ready()
+        if not ready_check.success {
+            return ready_check
+        }
+
+        -- 确定使用的会话
+        let sid = if session_id.len() > 0 { session_id } else { self.active_session }
+
+        -- 如果会话不存在，创建新会话
+        if not (sid in self.chat_sessions) {
+            self.chat_sessions[sid] = ConversationHistory::new(max_rounds=20)
+        }
+
+        -- 流式模式
+        if stream and self.on_stream_chunk != null {
+            return self.chat_stream(message, sid)
+        }
+
+        -- 普通模式
+        let start_time = get_time_ms()
+
+        let config = self.default_generation_config
+        config.max_new_tokens = self.max_response_tokens
+        config.stream = false
+
+        let result = chat(self.engine.unwrap(), self.chat_sessions[sid], message, config)
+
+        let elapsed = get_time_ms() - start_time
+
+        return success_response({
+            "reply": result.text,
+            "session_id": sid,
+            "tokens_generated": result.num_generated_tokens,
+            "tokens_per_second": result.tokens_per_second,
+            "finish_reason": result.finish_reason,
+            "processing_time_ms": elapsed
+        })
+    }
+
+    --- 流式对话（逐步返回内容）
+    fn chat_stream(
+        self mut,
+        message: str,
+        session_id: str
+    ) -> APIResponse {
+        let config = self.default_generation_config
+        config.max_new_tokens = self.max_response_tokens
+        config.stream = true
+
+        let stream_fn = self.engine.unwrap().generate_stream(message, config)
+
+        let mut full_text = ""
+        let mut chunk_count = 0
+
+        loop {
+            let chunk = stream_fn()
+            chunk_count = chunk_count + 1
+
+            if chunk.text.len() > 0 {
+                full_text = full_text ++ chunk.text
+
+                -- 通知回调
+                if self.on_stream_chunk != null {
+                    self.on_stream_chunk.unwrap()(chunk)
+                }
+            }
+
+            if chunk.is_finished {
+                break
+            }
+
+            -- 安全退出
+            if chunk_count > self.max_response_tokens * 2 {
+                break
+            }
+        }
+
+        return success_response({
+            "reply": full_text,
+            "session_id": session_id,
+            "stream_chunks": chunk_count
+        })
+    }
+
+    --- 新建对话会话
+    pub fn new_chat_session(
+        self mut,
+        system_prompt: str = ""
+    ) -> str {
+        let session_id = generate_uuid()
+
+        self.chat_sessions[session_id] = ConversationHistory::new(max_rounds=20)
+
+        if system_prompt.len() > 0 {
+            self.chat_sessions[session_id].add_message("system", system_prompt)
+        } else {
+            self.setup_default_system_prompt(session_id)
+        }
+
+        self.active_session = session_id
+
+        return session_id
+    }
+
+    --- 切换到指定会话
+    pub fn switch_session(self mut, session_id: str) -> bool {
+        if session_id in self.chat_sessions {
+            self.active_session = session_id
+            return true
+        }
+        return false
+    }
+
+    --- 获取所有会话列表
+    pub fn list_sessions(self) -> [str] {
+        return keys(self.chat_sessions)
+    }
+
+    --- 清除指定会话历史
+    pub fn clear_session(self mut, session_id: str = "") {
+        let sid = if session_id.len() > 0 { session_id } else { self.active_session }
+        if sid in self.chat_sessions {
+            self.chat_sessions[sid] = ConversationHistory::new(max_rounds=20)
+        }
+    }
+
+    -- |=================== 代码补全功能 ===================|
+
+    --- 代码智能补全
+    ---
+    --- 根据光标前的代码上下文，提供补全建议。
+    ---
+    --- 参数：
+    ---   code: 当前文件的全部代码
+    ---   cursor_position: 光标位置（字符偏移量）
+    ---
+    --- 返回：补全候选列表
+    pub fn code_complete(
+        self mut,
+        code: str,
+        cursor_position: i64
+    ) -> APIResponse {
+        -- 就绪检查
+        let ready_check = self.check_ready()
+        if not ready_check.success {
+            return ready_check
+        }
+
+        -- 检查功能是否启用
+        if not (self.state.current_features & FEATURE_CODE_COMPLETE != 0) {
+            return error_response(ERR_INVALID_PARAM, "代码补全功能未启用")
+        }
+
+        -- 提取光标前的上下文（用于生成 prompt）
+        let context_before = extract_context_before_cursor(code, cursor_position)
+
+        -- 检查缓存
+        let cache_key = hash_code_context(context_before)
+        if cache_key in self.completion_cache {
+            return success_response(self.completion_cache[cache_key])
+        }
+
+        -- 构造补全 prompt
+        let completion_prompt = build_completion_prompt(code, context_before, cursor_position)
+
+        -- 调用推理引擎获取补全
+        let config = self.default_generation_config
+        config.max_new_tokens = 128  -- 补全通常较短
+        config.temperature = 0.2     -- 低温度以获得更确定的结果
+        config.top_k = 10
+        config.do_sample = false     -- 使用贪心解码提高确定性
+
+        let result = ask_ai(self.engine.unwrap(), completion_prompt)
+
+        -- 解析补全结果
+        let completions = parse_completions(result, context_before)
+
+        let completion_result = CompletionResult {
+            items: completions,
+            start_offset: cursor_position,  -- 简化处理
+            end_offset: cursor_position,
+            is_incomplete: false
+        }
+
+        -- 存入缓存
+        self.completion_cache[cache_key] = completion_result
+
+        return success_response(completion_result)
+    }
+
+    --- 快速补全（仅返回最佳匹配）
+    pub fn complete_best_match(
+        self mut,
+        code: str,
+        cursor_position: i64
+    ) -> str {
+        let response = self.code_complete(code, cursor_position)
+
+        if response.success and response.data != null {
+            let result = response.data as CompletionResult
+            if result.items.len() > 0 {
+                return result.items[0].text
+            }
+        }
+
+        return ""
+    }
+
+    -- |=================== 语法检查功能 ===================|
+
+    --- 代码语法检查与 Lint
+    ---
+    --- 分析代码中的问题并提供建议。
+    ---
+    --- 参数：
+    ---   code: 要检查的 KLC 代码
+    ---   severity_level: 最低报告级别 ("error", "warning", "info")
+    ---
+    /// 返回：发现的问题列表
+    pub fn lint_code(
+        self mut,
+        code: str,
+        severity_level: str = "warning"
+    ) -> APIResponse {
+        -- 就绪检查
+        let ready_check = self.check_ready()
+        if not ready_check.success {
+            return ready_check
+        }
+
+        -- 检查功能是否启用
+        if not (self.state.current_features & FEATURE_LINT != 0) {
+            return error_response(ERR_INVALID_PARAM, "Lint 功能未启用")
+        }
+
+        -- 检查缓存
+        if code in self.lint_cache {
+            return success_response(self.lint_cache[code])
+        }
+
+        -- 构造 lint prompt
+        let lint_prompt = build_lint_prompt(code, severity_level)
+
+        -- 调用 AI 分析
+        let config = self.default_generation_config
+        config.max_new_tokens = 1024
+        config.temperature = 0.1  -- 低温度以获得精确的分析
+
+        let analysis = ask_ai(self.engine.unwrap(), lint_prompt)
+
+        -- 解析分析结果
+        let lint_result = parse_lint_results(analysis, code)
+
+        -- 存入缓存
+        self.lint_cache[code] = lint_result
+
+        return success_response(lint_result)
+    }
+
+    --- 自动修复代码问题
+    pub fn auto_fix(
+        self mut,
+        code: str,
+        issue_ids: [i64]? = null
+    ) -> APIResponse {
+        -- 先执行 lint
+        let lint_response = self.lint_code(code)
+        if not lint_response.success {
+            return lint_response
+        }
+
+        let lint_result = lint_response.data as LintResult
+
+        -- 选择要修复的问题
+        let issues_to_fix = []
+        for i in 0..lint_result.issues.len() {
+            let issue = lint_result.issues[i]
+            if issue.auto_fixable {
+                if issue_ids == null or i in issue_ids {
+                    issues_to_fix.push(issue)
+                }
+            }
+        }
+
+        if issues_to_fix.is_empty() {
+            return success_response({
+                "fixed_code": code,
+                "fixes_applied": 0,
+                "message": "没有可自动修复的问题"
+            })
+        }
+
+        -- 构建 fix prompt
+        let fix_prompt = build_fix_prompt(code, issues_to_fix)
+
+        let fixed_code = ask_ai(self.engine.unwrap(), fix_prompt)
+
+        return success_response({
+            "original_code": code,
+            "fixed_code": fixed_code.text,
+            "fixes_applied": issues_to_fix.len(),
+            "issues_fixed": issues_to_fix
+        })
+    }
+
+    -- |=================== 代码解释功能 ===================|
+
+    --- 解释代码片段
+    ---
+    --- 用自然语言解释代码的功能和逻辑。
+    ---
+    /// 参数：
+    ///   code: 要解释的代码
+    ///   detail_level: 详细程度 ("brief", "standard", "detailed")
+    pub fn explain_code(
+        self mut,
+        code: str,
+        detail_level: str = "standard"
+    ) -> APIResponse {
+        -- 就绪检查
+        let ready_check = self.check_ready()
+        if not ready_check.success {
+            return ready_check
+        }
+
+        -- 构造解释 prompt
+        let explain_prompt = build_explain_prompt(code, detail_level)
+
+        -- 调用 AI
+        let config = self.default_generation_config
+        config.max_new_tokens = 1536
+
+        let explanation = ask_ai(self.engine.unwrap(), explain_prompt)
+
+        -- 解析结果
+        let explain_result = ExplainResult {
+            summary: extract_summary(explanation.text),
+            detailed: explanation.text,
+            complexity: estimate_complexity(code),
+            suggestions: extract_suggestions(explanation.text)
+        }
+
+        return success_response(explain_result)
+    }
+
+    --- 为代码添加注释
+    pub fn add_comments(self mut, code: str) -> APIResponse {
+        let prompt = "请为以下KLC代码添加详细的中文注释。保留原始代码不变，" ++
+                     "只添加注释来解释每行或每个代码块的功能。\n\n" ++ code
+
+        let commented = ask_ai(self.engine.unwrap(), prompt)
+
+        return success_response({
+            "original_code": code,
+            "commented_code": commented.text
+        })
+    }
+
+    -- |=================== 高级功能 ===================|
+
+    --- 代码翻译（KLC ↔ Python/C++/JavaScript 等）
+    pub fn translate_code(
+        self mut,
+        code: str,
+        from_lang: str,
+        to_lang: str
+    ) -> APIResponse {
+        let prompt = "将以下 " ++ from_lang ++ " 代码翻译为 " ++ to_lang ++ "。\n" ++
+                     "保持相同的逻辑结构和变量命名风格。\n\n源代码:\n```" ++
+                     from_lang ++ "\n" ++ code ++ "\n```\n\n目标代码:\n```" ++
+                     to_lang ++ "\n"
+
+        let translated = ask_ai(self.engine.unwrap(), prompt)
+
+        return success_response({
+            "source_language": from_lang,
+            "target_language": to_lang,
+            "source_code": code,
+            "translated_code": translated.text
+        })
+    }
+
+    --- 代码优化建议
+    pub fn optimize_suggestions(self mut, code: str) -> APIResponse {
+        let prompt = "分析以下KLC代码并提供优化建议。" ++
+                     "关注点：性能、可读性、内存使用、最佳实践。\n\n" ++
+                     code ++ "\n\n请按以下格式输出：" ++
+                     "\n## 问题1\n- **问题描述**\n- **影响**\n- **优化建议**\n- **优化后代码**\n"
+
+        let suggestions = ask_ai(self.engine.unwrap(), prompt)
+
+        return success_response({
+            "original_code": code,
+            "suggestions": suggestions.text
+        })
+    }
+
+    --- 单元测试生成
+    pub fn generate_tests(self mut, code: str) -> APIResponse {
+        let prompt = "为以下KLC函数/模块生成完整的单元测试。" ++
+                     "覆盖正常边界情况和异常情况。\n\n" ++ code
+
+        let tests = ask_ai(self.engine.unwrap(), prompt)
+
+        return success_response({
+            "source_code": code,
+            "test_code": tests.text
+        })
+    }
+
+    -- |=================== 配置与回调 ===================|
+
+    --- 设置流式输出回调
+    pub fn set_stream_callback(self mut, callback: (StreamChunk) -> ()) {
+        self.on_stream_chunk = callback
+    }
+
+    --- 设置进度回调
+    pub fn set_progress_callback(self mut, callback: (i64, i64) -> ()) {
+        self.on_progress = callback
+    }
+
+    --- 设置错误回调
+    pub fn set_error_callback(self mut, callback: (str) -> ()) {
+        self.on_error = callback
+    }
+
+    --- 更新生成配置
+    pub fn update_config(self mut, config: GenerationConfig) {
+        self.default_generation_config = config
+    }
+
+    --- 获取当前状态
+    pub fn get_status(self) -> APIResponse {
+        let engine_stats = ""
+        if self.engine != null {
+            engine_stats = self.engine.unwrap().get_stats()
+        }
+
+        return success_response({
+            "integration_version": IDE_INTEGRATION_VERSION,
+            "api_version": IDE_API_VERSION,
+            "state": self.state,
+            "active_session": self.active_session,
+            "session_count": keys(self.chat_sessions).len(),
+            "cache_sizes": {
+                "completion": keys(self.completion_cache).len(),
+                "lint": keys(self.lint_cache).len()
+            },
+            "engine_stats": engine_stats
+        })
+    }
+
+    -- |=================== 私有辅助方法 ===================|
+
+    --- 设置系统提示词
+    fn setup_system_prompts(self mut) {
+        self.setup_default_system_prompt("default")
+    }
+
+    --- 设置默认的系统提示词
+    fn setup_default_system_prompt(self mut, session_id: str) {
+        let system_prompt = """你是一个专业的KLC编程语言AI助手。你的职责包括：
+
+1. **代码助手**
+   - 回答关于KLC语法、语义的问题
+   - 提供代码示例和最佳实践
+   - 解释错误信息和解决方案
+
+2. **编程辅助**
+   - 代码补全和重构建议
+   - 性能优化建议
+   - 设计模式推荐
+
+3. **知识问答**
+   - 计算机科学基础概念
+   - 算法和数据结构解释
+   - 软件工程方法论
+
+回答要求：
+- 使用清晰简洁的中文
+- 代码示例使用KLC语法
+- 必要时提供多种解决方案
+- 对于不确定的信息，明确说明"""
+
+        if session_id in self.chat_sessions {
+            self.chat_sessions[session_id].add_message("system", system_prompt)
+        }
+    }
+}
+
+-- |===========================================================================|
+-- |                      Prompt 构建工具                                         |
+-- |===========================================================================|
+
+--- 构建代码补全 Prompt
+fn build_completion_prompt(full_code: str, context_before: str, cursor_pos: i64) -> str {
+    return """你是一个KLC代码补全AI。根据用户正在输入的代码，预测最可能的后续代码。
+
+规则：
+1. 只输出要补全的代码部分，不要重复已有内容
+2. 保持与现有代码风格一致
+3. 输出有效的KLC代码语法
+4. 如果是函数调用，包含必要的参数
+5. 不要添加任何解释文字，直接输出代码
+
+当前代码（|表示光标位置）：
+""" ++ context_before ++ "|
+
+预测后续代码（直接输出，不要任何前缀）："""
+}
+
+--- 构建 Lint Prompt
+fn build_lint_prompt(code: str, severity_level: str) -> str {
+    return """你是KLC代码质量分析专家。请分析以下代码中的问题。
+
+最低报告级别：""" ++ severity_level ++ """
+
+分析要点：
+1. **语法错误**：编译期可能失败的问题
+2. **逻辑错误**：运行时的潜在 bug
+3. **性能问题**：可优化的低效写法
+4. **风格问题**：不符合 KLC 编码规范
+5. **安全隐患**：可能的漏洞或风险
+
+请按以下 JSON 格式输出（确保有效 JSON）：
+{
+  "issues": [
+    {
+      "severity": "error|warning|info",
+      "line": 行号,
+      "column": 列号,
+      "message": "问题描述",
+      "rule_id": "规则标识（可选）",
+      "suggestion": "修复建议（可选）",
+      "auto_fixable": true/false
+    }
+  ],
+  "summary": "总体评估"
+}
+
+待分析的代码：
+""" ++ code
+}
+
+--- 构建 Fix Prompt
+fn build_fix_prompt(code: str, issues: [LintIssue]) -> str {
+    let issue_descriptions = ""
+
+    for issue in issues {
+        issue_descriptions = issue_descriptions ++ "- [" ++ issue.severity ++
+                           "] Line " ++ issue.line.to_str() ++ ": " ++
+                           issue.message ++ "\n"
+    }
+
+    return """请修复以下代码中发现的问题：
+
+需要修复的问题：
+""" ++ issue_descriptions ++ """
+
+原始代码：
+""" ++ code """
+
+请输出完整的修复后代码（保持原有结构不变，只修改有问题的地方）。直接输出代码，不需要额外说明："""
+}
+
+--- 构建 Code Explanation Prompt
+fn build_explain_prompt(code: str, detail_level: str) -> str {
+    let level_instruction = match detail_level {
+        "brief" => { "用一句话概括这段代码的功能。" },
+        "detailed" => { "详细解释每一行代码的作用，包括数据流向和控制流。" },
+        _ => { "分段解释代码的主要逻辑和功能，包括关键算法和数据结构。" }
+    }
+
+    return level_instruction ++ "\n\n使用中文回答。代码如下：\n" ++ code
+}
+
+-- |===========================================================================|
+-- |                      结果解析工具                                           |
+-- |===========================================================================|
+
+--- 解析补全结果为候选列表
+fn parse_completions(ai_output: str, context: str) -> [CompletionItem] {
+    let items = []
+    -- AI 输出可能是多个选项或单个最佳选项
+    let lines = ai_output.split("\n")
+
+    for line in lines {
+        let trimmed = line.trim()
+        if trimmed.len() > 0 and not trimmed.starts_with("//") and
+           not trimmed.starts_with("#") and not trimmed.starts_with("--") {
+
+            -- 判断补全类型
+            let kind = detect_completion_kind(trimmed)
+
+            items.push(CompletionItem {
+                text: trimmed,
+                display_text: trimmed,
+                kind: kind,
+                documentation: null,
+                insert_text: trimmed,
+                confidence: calculate_confidence(trimmed, context)
+            })
+
+            if items.len() >= 10 {
+                break  -- 限制候选数量
+            }
+        }
+    }
+
+    return items
+}
+
+--- 解析 Lint 结果
+fn parse_lint_results(ai_output: str, original_code: str) -> LintResult {
+    -- 尝试从 AI 输出解析结构化数据
+    -- 这里简化处理，实际应使用 JSON 解析
+
+    let mut issues = []
+
+    -- 简单的模式匹配提取问题
+    let lines = ai_output.split("\n")
+    let mut current_severity = "info"
+
+    for line in lines {
+        if line.contains("error") or line.contains("Error") {
+            current_severity = "error"
+        } else if line.contains("warning") or line.contains("Warning") {
+            current_severity = "warning"
+        }
+
+        if line.contains("Line") or line.contains("line") {
+            -- 尝试提取行号
+            let line_num = extract_line_number(line)
+            if line_num > 0 {
+                issues.push(LintIssue {
+                    severity: current_severity,
+                    line: line_num,
+                    column: 0,
+                    message: line.trim(),
+                    rule_id: null,
+                    suggestion: null,
+                    auto_fixable: current_severity != "error"
+                })
+            }
+        }
+    }
+
+    -- 统计各级别问题数
+    let mut error_count = 0
+    let mut warning_count = 0
+
+    for issue in issues {
+        if issue.severity == "error" {
+            error_count = error_count + 1
+        } else if issue.severity == "warning" {
+            warning_count = warning_count + 1
+        }
+    }
+
+    return LintResult {
+        issues: issues,
+        error_count: error_count,
+        warning_count: warning_count,
+        source: null
+    }
+}
+
+--- 提取摘要
+fn extract_summary(text: str) -> str {
+    -- 取第一段非空内容作为摘要
+    let lines = text.split("\n")
+    for line in lines {
+        let trimmed = line.trim()
+        if trimmed.len() > 10 and not trimmed.starts_with("#") and
+           not trimmed.starts_with("//") {
+            return trimmed
+        }
+    }
+    return text.substring(0, math.min(text.len(), 200))
+}
+
+--- 估算代码复杂度
+fn estimate_complexity(code: str) -> str {
+    -- 简单启发式估算
+    let lines = code.split("\n").len()
+    let loops = count_occurrences(code, "for ") +
+                count_occurrences(code, "while ")
+    let conditions = count_occurrences(code, "if ") +
+                      count_occurrences(code, "else ")
+
+    if loops + conditions > 15 or lines > 100 {
+        return "高"
+    } else if loops + conditions > 7 or lines > 50 {
+        return "中"
+    }
+    return "低"
+}
+
+--- 提取建议列表
+fn extract_suggestions(text: str) -> [str]? {
+    -- 寻找 "建议"、"应该" 等关键词
+    let suggestions = []
+    let paragraphs = text.split("\n\n")
+
+    for para in paragraphs {
+        if para.contains("建议") or para.contains("应该") or
+           para.contains("推荐") or para.contains("可以改进") {
+            suggestions.push(para.trim())
+        }
+    }
+
+    if suggestions.is_empty() {
+        return null
+    }
+    return suggestions
+}
+
+-- |===========================================================================|
+-- |                       工具函数                                               |
+-- |===========================================================================|
+
+--- 获取时间戳
+fn get_time_ms() -> i64 {
+    -- 简化实现
+    return time_now()
+}
+
+--- 时间相关
+fn time_now() -> i64 {
+    return 0  -- 实际应使用系统时钟
+}
+
+--- 检查文件是否存在
+fn file_exists(path: str) -> bool {
+    -- 简化实现：假设文件不存在（演示模式）
+    return false
+}
+
+--- 生成 UUID（简化版）
+fn generate_uuid() -> str {
+    return "session_" ++ time_now().to_str() ++ "_" ++
+           random_int(1000, 9999).to_str()
+}
+
+--- 生成随机整数
+fn random_int(min: i64, max: i64) -> i64 {
+    return min + (time_now() % (max - min + 1))
+}
+
+--- 格式化功能标志
+fn format_features(flags: i64) -> str {
+    let features = []
+    if flags & FEATURE_CHAT != 0 { features.push("Chat") }
+    if flags & FEATURE_CODE_COMPLETE != 0 { features.push("Complete") }
+    if flags & FEATURE_LINT != 0 { features.push("Lint") }
+    if flags & FEATURE_EXPLAIN != 0 { features.push("Explain") }
+    if flags & FEATURE_FIX != 0 { features.push("AutoFix") }
+    if features.is_empty() { features.push("(none)") }
+    return join(features, ", ")
+}
+
+--- 连接字符串数组
+fn join(arr: [str], sep: str) -> str {
+    if arr.is_empty() { return "" }
+    let result = arr[0]
+    for i in 1..arr.len() {
+        result = result ++ sep ++ arr[i]
+    }
+    return result
+}
+
+--- 创建成功响应
+fn success_response(data: any?) -> APIResponse {
+    return APIResponse {
+        success: true,
+        code: SUCCESS,
+        data: data,
+        error_message: null,
+        processing_time_ms: 0
+    }
+}
+
+--- 创建错误响应
+fn error_response(code: i64, message: str) -> APIResponse {
+    return APIResponse {
+        success: false,
+        code: code,
+        data: null,
+        error_message: message,
+        processing_time_ms: 0
+    }
+}
+
+--- 创建默认 IDE 生成配置
+fn create_default_ide_config() -> GenerationConfig {
+    return GenerationConfig {
+        max_new_tokens: 1024,
+        min_new_tokens: 1,
+        sampling: SamplingConfig {
+            temperature: 0.8,
+            top_k: 50,
+            top_p: 0.9,
+            repetition_penalty: 1.15,
+            presence_penalty: 0.1,
+            frequency_penalty: 0.1,
+            min_tokens_to_keep: 1,
+            do_sample: true,
+            seed: null
+        },
+        stop_sequences: [],
+        stop_token_ids: [EOS_TOKEN_ID],
+        skip_special_tokens: true,
+        echo_prompt: false,
+        stream: false,
+        return_full_text: false,
+        batch_size: 1
+    }
+}
+
+--- 设置演示模式的轻量级引擎
+fn setup_demo_engine(integration: KLCIDEIntegration mut) {
+    -- 在实际应用中，这里会加载真实模型
+    -- 演示模式下使用简化版本
+}
+
+--- 提取光标前的代码上下文
+fn extract_context_before_cursor(code: str, cursor_pos: i64) -> str {
+    if cursor_pos <= 0 { return "" }
+    if cursor_pos > code.len() { return code }
+    return code.substring(0, cursor_pos)
+}
+
+--- 对代码上下文计算哈希（用于缓存键）
+fn hash_code_context(context: str) -> str {
+    -- 简化的哈希实现
+    let hash = 0
+    for ch in chars(context) {
+        hash = (hash * 31 + ch as i64) % 2147483647
+    }
+    return "ctx_" ++ hash.to_str()
+}
+
+--- 检测补全项的类型
+fn detect_completion_kind(text: str) -> str {
+    -- 关键字检测
+    let keywords = [
+        "fn", "let", "mut", "if", "else", "for", "while", "loop",
+        "return", "break", "continue", "struct", "type", "enum",
+        "match", "impl", "pub", "priv", "use", "mod", "import",
+        "true", "false", "null", "and", "or", "not", "in"
+    ]
+
+    for kw in keywords {
+        if text == kw or text.starts_with(kw ++ " ") or text.starts_with(kw ++ "(") {
+            return "keyword"
+        }
+    }
+
+    -- 函数检测
+    if text.contains("(") and text.ends_with("(") {
+        return "function"
+    }
+
+    -- 变量检测
+    if text.starts_with("let ") or text.starts_with("const ") {
+        return "variable"
+    }
+
+    -- 类型检测
+    if text.starts_with(": ") and (text.contains("[") or text.contains("{")) {
+        return "type"
+    }
+
+    return "snippet"
+}
+
+--- 计算补全置信度
+fn calculate_confidence(completion: str, context: str) -> f64 {
+    let confidence = 0.5  -- 基础置信度
+
+    -- 上下文长度越长，置信度越高（更多信息可用）
+    if context.len() > 50 {
+        confidence = confidence + 0.1
+    }
+    if context.len() > 200 {
+        confidence = confidence + 0.1
+    }
+
+    -- 匹配常见模式增加置信度
+    if completion.starts_with("fn ") { confidence = confidence + 0.15 }
+    if completion.contains(".klc") { confidence = confidence + 0.05 }
+
+    -- 合法性检查
+    if is_valid_klc_syntax(completion) { confidence = confidence + 0.1 }
+
+    return math.min(confidence, 1.0)
+}
+
+--- 简单的 KLC 语法合法性检查
+fn is_valid_klc_syntax(text: str) -> bool {
+    -- 非常简化的检查
+    if text.contains("(") and not text.contains(")") {
+        return false
+    }
+    if text.count("{") != text.count("}") {
+        return false  -- 可能不完整
+    }
+    return true
+}
+
+--- 计算子串出现次数
+fn count_occurrences(s: str, substr: str) -> i64 {
+    let count = 0
+    let mut pos = 0
+
+    while pos < s.len() {
+        let found = s.find(substr, pos)
+        if found < 0 { break }
+        count = count + 1
+        pos = found + substr.len()
+    }
+
+    return count
+}
+
+--- 从字符串中提取行号
+fn extract_line_number(line: str) -> i64 {
+    -- 简单的正则式匹配
+    let patterns = [
+        "Line ", "line ", "L", ":"
+    ]
+
+    for pat in patterns {
+        let idx = line.find(pat)
+        if idx >= 0 {
+            let after_pat = line.substring(idx + pat.len())
+            let num_str = ""
+            for ch in chars(after_pat) {
+                if ch >= '0' and ch <= '9' {
+                    num_str = num_str ++ to_str(ch)
+                } else {
+                    break
+                }
+            }
+            if num_str.len() > 0 {
+                return num_str.to_i64()
+            }
+        }
+    }
+
+    return 0
+}
+
+-- |===========================================================================|
+-- |                      DLL 导出接口（Windows）                                 |
+-- |===========================================================================|
+--
+-- 以下是导出给外部调用的 C 兼容接口。
+-- 这些函数可以被 KLC IDE 作为 DLL 或静态库链接使用。
+--
+-- C 头文件声明示例：
+-- /*
+-- // klcaide.h - KLC AI IDE Integration Header
+--
+-- #ifdef __cplusplus
+-- extern "C" {
+-- #endif
+--
+-- // 初始化
+-- __declspec(dllexport) int KLCA_Init(const char* model_dir);
+--
+-- // AI 对话
+-- __declspec(dllexport) int KLCA_Chat(const char* session_id,
+--                                      const char* message,
+--                                      char* output_buffer,
+--                                      int buffer_size);
+--
+-- // 代码补全
+-- __declspec(dllexport) int KLCA_Complete(const char* code,
+--                                          int cursor_pos,
+--                                          char* output_buffer,
+--                                          int buffer_size);
+--
+-- // 代码检查
+-- __declspec(dllexport) int KLCA_Lint(const char* code,
+--                                     char* output_buffer,
+--                                     int buffer_size);
+--
+-- // 清理
+-- __declspec(dllexport) void KLCA_Shutdown(void);
+--
+-- #ifdef __cplusplus
+-- }
+-- #endif
+-- */
+
+--- 全局 IDE 实例指针（DLL 场景下使用）
+let g_ide_instance: KLCIDEIntegration? = null
+
+--- 初始化 DLL 接口
+---
+/// 对应 C 函数: int KLCA_Init(const char* model_dir)
+pub fn dll_init(model_dir: str) -> i64 {
+    g_ide_instance = KLCIDEIntegration::new(model_dir)
+    let response = g_ide_instance.initialize()
+
+    if response.success {
+        return SUCCESS
+    }
+    return response.code
+}
+
+--- AI 对话（DLL 接口）
+---
+/// 对应 C 函数: int KLCA_Chat(...)
+pub fn dll_chat(session_id: str, message: str, buffer_size: i64 = 4096) -> (i64, str) {
+    if g_ide_instance == null {
+        return (ERR_NOT_INITIALIZED, "")
+    }
+
+    let response = g_ide_instance.chat(message, session_id)
+
+    if response.success {
+        let reply = response.data["reply"] as str
+        if reply.len() <= buffer_size {
+            return (SUCCESS, reply)
+        }
+        return (SUCCESS, reply.substring(0, buffer_size))
+    }
+
+    return (response.code, response.error_message ?? "")
+}
+
+--- 代码补全（DLL 接口）
+pub fn dll_complete(code: str, cursor_pos: i64, buffer_size: i64 = 4096) -> (i64, [CompletionItem]) {
+    if g_ide_instance == null {
+        return (ERR_NOT_INITIALIZED, [])
+    }
+
+    let response = g_ide_instance.code_complete(code, cursor_pos)
+
+    if response.success {
+        let result = response.data as CompletionItem[]
+        return (SUCCESS, result)
+    }
+
+    return (response.code, [])
+}
+
+--- 代码检查（DLL 接口）
+pub fn dll_lint(code: str) -> (i64, LintResult?) {
+    if g_ide_instance == null {
+        return (ERR_NOT_INITIALIZED, null)
+    }
+
+    let response = g_ide_instance.lint_code(code)
+
+    if response.success {
+        return (SUCCESS, response.data as LintResult?)
+    }
+
+    return (response.code, null)
+}
+
+--- 关闭 DLL（清理资源）
+pub fn dll_shutdown() -> i64 {
+    if g_ide_instance != null {
+        g_ide_instance.shutdown()
+        g_ide_instance = null
+        return SUCCESS
+    }
+    return ERR_NOT_INITIALIZED
+}
+
+-- |===========================================================================|
+-- |                      使用示例                                               |
+-- |===========================================================================|
+
+--- 完整演示：IDE 集成的所有功能
+fn demo_ide_integration() {
+    io.println("╔══════════════════════════════════════════════╗")
+    io.println("║     KLC IDE 集成接口 — 完整演示                ║")
+    io.println("╚══════════════════════════════════════════════╝")
+    io.println()
+
+    -- 步骤 1: 初始化
+    io.println("步骤 1: 初始化 IDE 集成")
+    io.println("-" .repeat(50))
+
+    let ide = KLCIDEIntegration::new("./models")
+    let init_result = ide.initialize(FEATURE_CHAT | FEATURE_CODE_COMPLETE |
+                                   FEATURE_LINT | FEATURE_EXPLAIN)
+
+    if not init_result.success {
+        io.println("✗ 初始化失败: " ++ init_result.error_message ?? "Unknown error")
+        exit(1)
+    }
+
+    io.println("✓ 初始化成功")
+    io.println("  版本: " ++ (init_result.data["version"] as str))
+    io.println("  功能: " ++ format_features(init_result.data["features"] as i64))
+    io.println()
+
+    -- 步骤 2: AI 对话
+    io.println("步骤 2: AI 对话功能")
+    io.println("-" .repeat(50))
+
+    let questions = [
+        "你好！请介绍一下你自己。",
+        "KLC编程语言有哪些主要特点？",
+        "如何编写一个Hello World程序？",
+        "请帮我写一个快速排序算法。",
+        "什么是Transformer架构？"
+    ]
+
+    for q in questions {
+        io.print("\n[User]: " ++ q ++ "\n")
+
+        let chat_response = ide.chat(q)
+        if chat_response.success {
+            let reply = chat_response.data["reply"] as str
+            io.println("[Assistant]: " ++ reply)
+            io.println("  (TPS: " ++
+                       ("%.2f" % (chat_response.data["tokens_per_second"] as f64)) ++
+                       ")")
+        }
+    }
+    io.println()
+
+    -- 步骤 3: 代码补全
+    io.println("步骤 3: 代码补全功能")
+    io.println("-" .repeat(50))
+
+    let code_samples = [
+        ("fn main() {\n    io.pr", 22),
+        ("let result = array.map(|item| item.valu", 45),
+        ("struct Person {\n    name: Str", 29),
+        ("for i in 0..100 {\n    if i % 2 == 0 {\n        pri", 42),
+        ("use tensor::{Tensor, Shape}\nlet t = Tensor::zeros(", 47)
+    ]
+
+    for (code, cursor) in code_samples {
+        io.println("\n代码:")
+        io.println("  " ++ code.replace("\n", "\n  "))
+        io.println("  " ++ " ".repeat(cursor - code.split("\n").last().len()) ++ "^")
+
+        let comp_response = ide.code_complete(code, cursor)
+        if comp_response.success {
+            let result = comp_response.data as CompletionResult
+            io.println("补全建议 (" ++ result.items.len().to_str() ++ " 个):")
+
+            for i in 0..math.min(3, result.items.len()) {
+                let item = result.items[i]
+                io.println("  " ++ (i+1).to_str() ++ ". [" ++ item.kind ++ "] " ++
+                           item.display_text ++ " (" ++
+                           ("%.0f" % (item.confidence * 100)) ++ "%)")
+            }
+        }
+    }
+    io.println()
+
+    -- 步骤 4: 语法检查
+    io.println("步骤 4: 代码检查 (Lint)")
+    io.println("-" .repeat(50))
+
+    let code_to_check = """
+fn calculate_average(numbers: [f64]) -> f64 {
+    let sum = 0.0
+    for n in numbers {
+        sum = sum + n  -- Potential overflow for large arrays
+    }
+    return sum / numbers.length  -- Division by zero if empty!
+}
+
+fn process_data(data: [i64]) -> [i64] {
+    let result = []
+    for i in 0..data.length {
+        if data[i] > 0:
+            result.push(data[i] * 2)
+    }
+    return result
+}
+"""
+    io.println("检查代码:")
+    io.println(code_to_check)
+
+    let lint_response = ide.lint_code(code_to_check, "warning")
+    if lint_response.success {
+        let lint_result = lint_response.data as LintResult
+        io.println("\n检查结果:")
+        io.println("  错误: " ++ lint_result.error_count.to_str())
+        io.println("  警告: " ++ lint_result.warning_count.to_str())
+
+        if lint_result.issues.len() > 0 {
+            io.println("\n  问题详情:")
+            for issue in lint_result.issues {
+                io.println("  [" ++ issue.severity.to_upper() ++
+                           "] Line " ++ issue.line.to_str() ++ ": " ++
+                           issue.message)
+                if issue.suggestion != null {
+                    io.println("    → " ++ issue.suggestion)
+                }
+            }
+        }
+    }
+    io.println()
+
+    -- 步骤 5: 代码解释
+    io.println("步骤 5: 代码解释功能")
+    io.println("-" .repeat(50))
+
+    let complex_code = """
+// 快速排序实现
+fn quicksort<T>(arr: [T] mut, low: i64, high: i64) {
+    if low < high {
+        let pivot_idx = partition(arr, low, high)
+        quicksort(arr, low, pivot_idx - 1)
+        quicksort(arr, pivot_idx + 1, high)
+    }
+}
+
+fn partition<T>(arr: [T] mut, low: i64, high: i64) -> i64 {
+    let pivot = arr[high]
+    let mut i = low - 1
+
+    for j in low..high {
+        if arr[j] <= pivot {
+            i = i + 1
+            swap(&arr[i], &arr[j])
+        }
+    }
+    swap(&arr[i + 1], &arr[high])
+    return i + 1
+}
+"""
+    io.println("待解释代码:")
+    io.println(complex_code)
+
+    let explain_response = ide.explain_code(complex_code, "standard")
+    if explain_response.success {
+        let explain_result = explain_response.data as ExplainResult
+        io.println("\n【摘要】")
+        io.println("  " ++ explain_result.summary)
+        io.println("\n【详细解释】")
+        io.println("  " ++ explain_result.detailed.substring(0, 500) ++ "...")
+        io.println("\n【复杂度】: " ++ explain_result.complexity)
+    }
+    io.println()
+
+    -- 步骤 6: 状态查询
+    io.println("步骤 6: 系统状态")
+    io.println("-" .repeat(50))
+    let status = ide.get_status()
+    io.println(status)
+    io.println()
+
+    -- 步骤 7: 清理
+    io.println("步骤 7: 清理资源")
+    ide.shutdown()
+    io.println("✓ 资源已释放")
+
+    io.println()
+    io.println("═══════════════════════════════════════════")
+    io.println("  ✓ IDE 集成演示完成")
+    io.println("═══════════════════════════════════════════")
+}
+
+fn main() {
+    demo_ide_integration()
+}

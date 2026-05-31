@@ -1,0 +1,214 @@
+-- ============================================================================
+-- ast.klc — KLC 抽象语法树 (AST) 类型定义（自举用）
+-- 用结构体包装复合节点，规避 KLC 枚举单字段解构限制
+-- ============================================================================
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 二元运算符
+-- ═══════════════════════════════════════════════════════════════════════════
+
+enum BinOp {
+    Add,        -- +
+    Sub,        -- -
+    Mul,        -- *
+    Div,        -- /
+    Mod,        -- %
+    Eq,         -- ==
+    Neq,        -- !=
+    Lt,         -- <
+    Gt,         -- >
+    Lte,        -- <=
+    Gte,        -- >=
+    And,        -- and
+    Or,         -- or
+    Concat,     -- ++
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 一元运算符
+-- ═══════════════════════════════════════════════════════════════════════════
+
+enum UnaryOp {
+    Neg,        -- -x
+    Not,        -- not x
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 复合表达式结构体（包装多字段节点）
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- 二元表达式: left op right
+type BinaryNode {
+    left: Expr,
+    op: BinOp,
+    right: Expr,
+}
+
+-- 一元表达式: op expr
+type UnaryNode {
+    op: UnaryOp,
+    expr: Expr,
+}
+
+-- 函数调用: name(args...)
+type CallNode {
+    name: String,
+    args: Array,          -- Array<Expr>
+}
+
+-- if 表达式: if cond { then } else { else_opt }
+type IfExprNode {
+    cond: Expr,
+    then_expr: Expr,
+    else_expr: Expr,      -- Null 表示无 else
+}
+
+-- 字段访问: object.field
+type FieldAccessNode {
+    object: Expr,
+    field: String,
+}
+
+-- 结构体字面量: TypeName { field: val, ... }
+type StructLiteralNode {
+    type_name: String,
+    fields: Array,        -- Array<String> 交错 name1,val1,name2,val2...
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 表达式枚举
+-- ═══════════════════════════════════════════════════════════════════════════
+
+enum Expr {
+    Integer(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Char(char),
+    Ident(String),
+    NullExpr,                             -- null 字面量
+    Binary(BinaryNode),                   -- 二元运算
+    Unary(UnaryNode),                     -- 一元运算
+    Call(CallNode),                       -- 函数调用
+    IfExpr(IfExprNode),                   -- if 表达式
+    FieldAccess(FieldAccessNode),        -- a.b
+    StructLiteral(StructLiteralNode),    -- Type { ... }
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 语句结构体
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- let 语句: let [mut] name [:Type] = value
+type LetNode {
+    name: String,
+    mutable: bool,
+    type_ann: String,     -- "" 表示无类型标注
+    value: Expr,
+}
+
+-- 赋值语句: name = value
+type AssignNode {
+    name: String,
+    value: Expr,
+}
+
+-- 字段赋值: obj.field = value
+type FieldAssignNode {
+    obj: String,
+    field: String,
+    value: Expr,
+}
+
+-- while 循环: while cond { body }
+type WhileNode {
+    cond: Expr,
+    body: Array,          -- Array<Stmt>
+}
+
+-- if 语句: if cond { then } [else { else }]
+type IfStmtNode {
+    cond: Expr,
+    then_block: Array,
+    else_block: Array,    -- 空数组表示无 else
+}
+
+-- for-in 循环: for var in iterable { body }
+type ForNode {
+    var: String,
+    iterable: Expr,
+    body: Array,
+}
+
+-- 函数定义: fn name(params) -> RetType { body }
+type FnDefNode {
+    name: String,
+    params: Array,        -- Array<ParamNode>
+    return_type: String,  -- "" 表示无返回类型
+    body: Array,          -- Array<Stmt>
+}
+
+-- 函数参数
+type ParamNode {
+    name: String,
+    type_ann: String,     -- "" 表示无类型
+}
+
+-- 结构体定义: type Name { field: Type, ... }
+type TypeDefNode {
+    name: String,
+    fields: Array,        -- Array<StructFieldNode>
+}
+
+-- 结构体字段
+type StructFieldNode {
+    name: String,
+    type_ann: String,
+    default: Expr,        -- Null 表示无默认值
+}
+
+-- 枚举定义: enum Name { Variant(Type), ... }
+type EnumDefNode {
+    name: String,
+    variants: Array,      -- Array<EnumVariantNode>
+}
+
+-- 枚举变体
+type EnumVariantNode {
+    name: String,
+    fields: Array,        -- Array<EnumFieldNode>，空=无数据变体
+}
+
+-- 枚举变体字段
+type EnumFieldNode {
+    name: String,         -- "" 表示位置字段
+    type_ann: String,
+}
+
+-- impl 块: impl Type { fn methods... }
+type ImplBlockNode {
+    type_name: String,
+    methods: Array,       -- Array<Stmt> (只包含 FnDef)
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 语句枚举
+-- ═══════════════════════════════════════════════════════════════════════════
+
+enum Stmt {
+    Let(LetNode),
+    Assign(AssignNode),
+    FieldAssign(FieldAssignNode),
+    ExprStmt(Expr),                     -- 表达式语句
+    Return(Expr),                       -- return expr (Null=无返回值)
+    While(WhileNode),
+    ForIn(ForNode),
+    IfStmt(IfStmtNode),
+    Block(Array),                       -- Array<Stmt> 块
+    FnDef(FnDefNode),
+    Print(Expr),                        -- io.print / print
+    PrintLn(Expr),                      -- io.println / println
+    TypeDef(TypeDefNode),
+    EnumDef(EnumDefNode),
+    ImplBlock(ImplBlockNode),
+}
