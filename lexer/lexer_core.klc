@@ -1,0 +1,575 @@
+﻿-- ============================================================================
+-- lexer_core.klc — KLC 词法分析器（自举用，v1.0.3-正式版 兼容版）
+-- 将源码字符串解析为 Token 数组
+-- 用法：let tokens = lexer_tokenize(source_code)
+-- ============================================================================
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Token 类型枚举 — 涵盖 KLC 所有词法单元
+-- ═══════════════════════════════════════════════════════════════════════════
+
+enum TokenType {
+    -- 字面量类型
+    Ident(String),          -- 标识符 (变量名/函数名)
+    Integer(i64),           -- 整数字面量
+    Float(f64),             -- 浮点数字面量
+    StrLit(String),         -- 字符串字面量
+    CharLit(char),          -- 字符字面量
+    Keyword(String),        -- 关键字 (统一为一个变体)
+
+    -- 算术运算符
+    Plus, Minus, Star, Slash, Percent,
+
+    -- 比较运算符
+    Eq, Neq, Lt, Gt, Lte, Gte,
+
+    -- 赋值运算符
+    Assign, PlusEq, MinusEq, StarEq, SlashEq,
+
+    -- 箭头
+    Arrow, FatArrow,
+
+    -- 分隔符
+    Colon, Colon2, Dot, DotDot, DotDotEq, Comma,
+
+    -- 括号
+    LParen, RParen, LBrace, RBrace, LBracket, RBracket,
+
+    -- 其他运算符
+    Concat, Pipe, Bar, Ampersand, Question, Question2,
+
+    -- 特殊
+    Eof, Unknown,
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Token 结构体
+-- ═══════════════════════════════════════════════════════════════════════════
+
+type Token {
+    kind: TokenType,
+    line: i64,
+    col: i64,
+    lexeme: String,
+}
+
+-- ============================================================================
+-- 字符分类工具（"内联"函数，小型高效）
+-- ============================================================================
+
+fn is_digit(ch: char) -> bool {
+    return ch >= '0' and ch <= '9'
+}
+
+fn is_alpha(ch: char) -> bool {
+    return (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z')
+}
+
+fn is_ident_ch(ch: char) -> bool {
+    return is_alpha(ch) or is_digit(ch) or ch == '_'
+}
+
+fn is_op_start(ch: char) -> bool {
+    return ch == '+' or ch == '-' or ch == '*' or ch == '/' or ch == '%'
+        or ch == '=' or ch == '!' or ch == '<' or ch == '>'
+        or ch == ':' or ch == ',' or ch == '|' or ch == '&' or ch == '?'
+        or ch == '(' or ch == ')' or ch == '{' or ch == '}'
+        or ch == '[' or ch == ']' or ch == '.'
+}
+
+fn char_to_str(ch: char) -> String {
+    if ch == '\n' { return "\\n" }
+    if ch == '\t' { return "\\t" }
+    if ch == '\r' { return "\\r" }
+    if ch == '\0' { return "\\0" }
+    return "" ++ ch.to_str()
+}
+
+-- ============================================================================
+-- 字符串 → 整数 手工转换（避免依赖外部库）
+-- ============================================================================
+
+fn str_to_i64(s: String) -> i64 {
+    let mut result: i64 = 0
+    let mut idx: i64 = 0
+    let limit: i64 = s.len()
+    while idx < limit {
+        let c = s.char_at(idx)
+        if c == '0' { result = result * 10 + 0 }
+        if c == '1' { result = result * 10 + 1 }
+        if c == '2' { result = result * 10 + 2 }
+        if c == '3' { result = result * 10 + 3 }
+        if c == '4' { result = result * 10 + 4 }
+        if c == '5' { result = result * 10 + 5 }
+        if c == '6' { result = result * 10 + 6 }
+        if c == '7' { result = result * 10 + 7 }
+        if c == '8' { result = result * 10 + 8 }
+        if c == '9' { result = result * 10 + 9 }
+        idx = idx + 1
+    }
+    return result
+}
+
+-- ============================================================================
+-- 关键字查找表（无 HashMap，用 if 链实现）
+-- ============================================================================
+
+fn is_keyword(word: String) -> bool {
+    if word == "let" { return true }
+    if word == "mut" { return true }
+    if word == "fn" { return true }
+    if word == "return" { return true }
+    if word == "if" { return true }
+    if word == "else" { return true }
+    if word == "while" { return true }
+    if word == "loop" { return true }
+    if word == "for" { return true }
+    if word == "in" { return true }
+    if word == "type" { return true }
+    if word == "impl" { return true }
+    if word == "mod" { return true }
+    if word == "use" { return true }
+    if word == "enum" { return true }
+    if word == "match" { return true }
+    if word == "true" { return true }
+    if word == "false" { return true }
+    if word == "and" { return true }
+    if word == "or" { return true }
+    if word == "not" { return true }
+    if word == "as" { return true }
+    if word == "self" { return true }
+    if word == "null" { return true }
+    return false
+}
+
+-- ============================================================================
+-- Token 显示函数（调试用）
+-- ============================================================================
+
+fn token_kind_name(k: TokenType) -> String {
+    return match k {
+        TokenType::Ident(_) => "Ident"
+        TokenType::Integer(_) => "Integer"
+        TokenType::Float(_) => "Float"
+        TokenType::StrLit(_) => "StrLit"
+        TokenType::CharLit(_) => "CharLit"
+        TokenType::Keyword(kw) => "Keyword(" ++ kw ++ ")"
+        TokenType::Plus => "Plus"
+        TokenType::Minus => "Minus"
+        TokenType::Star => "Star"
+        TokenType::Slash => "Slash"
+        TokenType::Percent => "Percent"
+        TokenType::Eq => "Eq"
+        TokenType::Neq => "Neq"
+        TokenType::Lt => "Lt"
+        TokenType::Gt => "Gt"
+        TokenType::Lte => "Lte"
+        TokenType::Gte => "Gte"
+        TokenType::Assign => "Assign"
+        TokenType::PlusEq => "PlusEq"
+        TokenType::MinusEq => "MinusEq"
+        TokenType::StarEq => "StarEq"
+        TokenType::SlashEq => "SlashEq"
+        TokenType::Arrow => "Arrow"
+        TokenType::FatArrow => "FatArrow"
+        TokenType::Colon => "Colon"
+        TokenType::Colon2 => "Colon2"
+        TokenType::Dot => "Dot"
+        TokenType::DotDot => "DotDot"
+        TokenType::DotDotEq => "DotDotEq"
+        TokenType::Comma => "Comma"
+        TokenType::LParen => "LParen"
+        TokenType::RParen => "RParen"
+        TokenType::LBrace => "LBrace"
+        TokenType::RBrace => "RBrace"
+        TokenType::LBracket => "LBracket"
+        TokenType::RBracket => "RBracket"
+        TokenType::Concat => "Concat"
+        TokenType::Pipe => "Pipe"
+        TokenType::Bar => "Bar"
+        TokenType::Ampersand => "Ampersand"
+        TokenType::Question => "Question"
+        TokenType::Question2 => "Question2"
+        TokenType::Eof => "Eof"
+        TokenType::Unknown => "Unknown"
+        _ => "?"
+    }
+}
+
+fn token_kind_val(k: TokenType) -> String {
+    return match k {
+        TokenType::Ident(s) => s
+        TokenType::Integer(n) => n.to_str()
+        TokenType::Float(f) => f.to_str()
+        TokenType::StrLit(s) => s
+        TokenType::CharLit(c) => c.to_str()
+        TokenType::Keyword(kw) => kw
+        _ => ""
+    }
+}
+
+fn fmt_token(t: Token) -> String {
+    let tn = token_kind_name(t.kind)
+    let tv = token_kind_val(t.kind)
+    let mut s = "[" ++ tn
+    if tv != "" {
+        s = s ++ "(" ++ tv ++ ")"
+    }
+    s = s ++ "] '" ++ t.lexeme ++ "' @ " ++ t.line.to_str() ++ ":" ++ t.col.to_str()
+    return s
+}
+
+fn print_tokens(tokens: Array) {
+    let n = tokens.len()
+    let mut i = 0
+    while i < n {
+        io.println(fmt_token(tokens[i]))
+        i = i + 1
+    }
+}
+
+-- ============================================================================
+-- 词法分析器状态（纯函数式，参数传递状态）
+-- ============================================================================
+
+-- 获取 source 中第 pos 个字符，越界返回 '\0'
+fn src_char(source: String, pos: i64, limit: i64) -> char {
+    if pos < 0 or pos >= limit {
+        return '\0'
+    }
+    return source.char_at(pos)
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 主词法分析入口
+-- ═══════════════════════════════════════════════════════════════════════════
+
+fn lexer_tokenize(source: String) -> Array {
+    let mut tokens = []
+    let limit: i64 = source.len()
+    let mut pos: i64 = 0
+    let mut line: i64 = 1
+    let mut col: i64 = 1
+
+    while pos < limit {
+        let ch = src_char(source, pos, limit)
+        let save_line = line
+        let save_col = col
+        let save_pos = pos
+        let mut handled = false  -- 本轮是否已处理
+
+        -- [1] 换行符
+        if not handled and ch == '\n' {
+            pos = pos + 1
+            line = line + 1
+            col = 1
+            handled = true
+        }
+
+        -- [2] 空白字符
+        if not handled and (ch == ' ' or ch == '\t' or ch == '\r') {
+            pos = pos + 1
+            col = col + 1
+            handled = true
+        }
+
+        -- [3] 注释 --
+        if not handled and ch == '-' and src_char(source, pos + 1, limit) == '-' {
+            pos = pos + 2
+            col = col + 2
+            -- 块注释 --|
+            if src_char(source, pos, limit) == '|' {
+                pos = pos + 1
+                while pos + 2 < limit and not (src_char(source, pos, limit) == '|' and src_char(source, pos + 1, limit) == '-' and src_char(source, pos + 2, limit) == '-') {
+                    pos = pos + 1
+                }
+                pos = pos + 3  -- 跳过 |--
+            } else {
+                -- 行注释
+                while pos < limit and src_char(source, pos, limit) != '\n' {
+                    pos = pos + 1
+                }
+            }
+            handled = true
+        }
+
+        -- [4] 字符串字面量
+        if not handled and ch == '"' {
+            let mut str_val = ""
+            let mut p = pos + 1  -- 跳过开始 "
+            while p < limit and src_char(source, p, limit) != '"' {
+                let c = src_char(source, p, limit)
+                if c == '\\' {
+                    p = p + 1
+                    let esc = src_char(source, p, limit)
+                    if esc == 'n' { str_val = str_val ++ "\n" }
+                    if esc == 't' { str_val = str_val ++ "\t" }
+                    if esc == 'r' { str_val = str_val ++ "\r" }
+                    if esc == '"' { str_val = str_val ++ "\"" }
+                    if esc == '\\' { str_val = str_val ++ "\\" }
+                    if esc != 'n' and esc != 't' and esc != 'r' and esc != '"' and esc != '\\' {
+                        str_val = str_val ++ char_to_str(esc)
+                    }
+                } else {
+                    str_val = str_val ++ char_to_str(c)
+                }
+                p = p + 1
+            }
+            if p < limit { p = p + 1 }  -- 跳过结束 "
+            let lexeme = "\"" ++ str_val ++ "\""
+            let t = Token { kind: TokenType::StrLit(str_val), line: save_line, col: save_col, lexeme: lexeme }
+            tokens.push(t)
+            pos = p
+            col = save_col + (pos - save_pos)
+            handled = true
+        }
+
+        -- [5] 字符字面量
+        if not handled and ch == '\'' {
+            let mut p = pos + 1  -- 跳过开始 '
+            let mut ch_val = src_char(source, p, limit)
+            if ch_val == '\\' {
+                p = p + 1
+                let esc = src_char(source, p, limit)
+                if esc == 'n' { ch_val = '\n' }
+                if esc == 't' { ch_val = '\t' }
+                if esc == 'r' { ch_val = '\r' }
+                if esc == '\'' { ch_val = '\'' }
+                if esc == '\\' { ch_val = '\\' }
+            }
+            p = p + 1
+            if src_char(source, p, limit) == '\'' { p = p + 1 }  -- 跳过结束 '
+            let lexeme = "'" ++ char_to_str(ch_val) ++ "'"
+            let t = Token { kind: TokenType::CharLit(ch_val), line: save_line, col: save_col, lexeme: lexeme }
+            tokens.push(t)
+            pos = p
+            col = save_col + (pos - save_pos)
+            handled = true
+        }
+
+        -- [6] 数字字面量（整数或浮点）
+        if not handled and is_digit(ch) {
+            let mut p = pos
+            while p < limit and is_digit(src_char(source, p, limit)) {
+                p = p + 1
+            }
+            let mut is_float = false
+            if p < limit and src_char(source, p, limit) == '.' {
+                let peek = src_char(source, p + 1, limit)
+                if is_digit(peek) {
+                    is_float = true
+                    p = p + 1  -- 跳过 .
+                    while p < limit and is_digit(src_char(source, p, limit)) {
+                        p = p + 1
+                    }
+                }
+            }
+            let lexeme = source.substr(pos, p)
+            if is_float {
+                let t = Token { kind: TokenType::Float(0.0), line: save_line, col: save_col, lexeme: lexeme }
+                tokens.push(t)
+            } else {
+                let val = str_to_i64(lexeme)
+                let t = Token { kind: TokenType::Integer(val), line: save_line, col: save_col, lexeme: lexeme }
+                tokens.push(t)
+            }
+            pos = p
+            col = save_col + (pos - save_pos)
+            handled = true
+        }
+
+        -- [7] 标识符或关键字
+        if not handled and (is_alpha(ch) or ch == '_') {
+            let mut p = pos
+            while p < limit and is_ident_ch(src_char(source, p, limit)) {
+                p = p + 1
+            }
+            let word = source.substr(pos, p)
+            let kind = if is_keyword(word) {
+                TokenType::Keyword(word)
+            } else {
+                TokenType::Ident(word)
+            }
+            let t = Token { kind: kind, line: save_line, col: save_col, lexeme: word }
+            tokens.push(t)
+            pos = p
+            col = save_col + (pos - save_pos)
+            handled = true
+        }
+
+        -- [8] 运算符和分隔符
+        if not handled and is_op_start(ch) {
+            let c1 = src_char(source, pos + 1, limit)
+            let c2 = src_char(source, pos + 2, limit)
+
+            -- 三字符运算符
+            if ch == '.' and c1 == '.' and c2 == '=' {
+                let t = Token { kind: TokenType::DotDotEq, line: save_line, col: save_col, lexeme: "..=" }
+                tokens.push(t)
+                pos = pos + 3
+                col = col + 3
+                handled = true
+            }
+
+            -- 两字符运算符
+            if not handled and ch == '+' and c1 == '+' {
+                let t = Token { kind: TokenType::Concat, line: save_line, col: save_col, lexeme: "++" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '+' and c1 == '=' {
+                let t = Token { kind: TokenType::PlusEq, line: save_line, col: save_col, lexeme: "+=" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '-' and c1 == '>' {
+                let t = Token { kind: TokenType::Arrow, line: save_line, col: save_col, lexeme: "->" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '-' and c1 == '=' {
+                let t = Token { kind: TokenType::MinusEq, line: save_line, col: save_col, lexeme: "-=" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '*' and c1 == '=' {
+                let t = Token { kind: TokenType::StarEq, line: save_line, col: save_col, lexeme: "*=" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '/' and c1 == '=' {
+                let t = Token { kind: TokenType::SlashEq, line: save_line, col: save_col, lexeme: "/=" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '=' and c1 == '=' {
+                let t = Token { kind: TokenType::Eq, line: save_line, col: save_col, lexeme: "==" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '=' and c1 == '>' {
+                let t = Token { kind: TokenType::FatArrow, line: save_line, col: save_col, lexeme: "=>" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '!' and c1 == '=' {
+                let t = Token { kind: TokenType::Neq, line: save_line, col: save_col, lexeme: "!=" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '<' and c1 == '=' {
+                let t = Token { kind: TokenType::Lte, line: save_line, col: save_col, lexeme: "<=" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '>' and c1 == '=' {
+                let t = Token { kind: TokenType::Gte, line: save_line, col: save_col, lexeme: ">=" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == ':' and c1 == ':' {
+                let t = Token { kind: TokenType::Colon2, line: save_line, col: save_col, lexeme: "::" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '.' and c1 == '.' {
+                let t = Token { kind: TokenType::DotDot, line: save_line, col: save_col, lexeme: ".." }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '|' and c1 == '>' {
+                let t = Token { kind: TokenType::Pipe, line: save_line, col: save_col, lexeme: "|>" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+            if not handled and ch == '?' and c1 == '?' {
+                let t = Token { kind: TokenType::Question2, line: save_line, col: save_col, lexeme: "??" }
+                tokens.push(t)
+                pos = pos + 2
+                col = col + 2
+                handled = true
+            }
+
+            -- 单字符运算符/分隔符
+            if not handled {
+                let lx = char_to_str(ch)
+                local_single_op(tokens, ch, lx, save_line, save_col)
+                pos = pos + 1
+                col = col + 1
+                handled = true
+            }
+        }
+
+        -- [9] 未知字符
+        if not handled {
+            let ut = Token { kind: TokenType::Unknown, line: save_line, col: save_col, lexeme: char_to_str(ch) }
+            tokens.push(ut)
+            pos = pos + 1
+            col = col + 1
+        }
+    }
+
+    -- 末尾添加 Eof
+    tokens.push(Token { kind: TokenType::Eof, line: line, col: col, lexeme: "" })
+    return tokens
+}
+
+-- 单字符运算符分发（用独立函数避免主函数过长）
+fn local_single_op(tokens: Array, ch: char, lx: String, line: i64, col: i64) {
+    if ch == '+' { tokens.push(Token { kind: TokenType::Plus, line: line, col: col, lexeme: lx }) }
+    if ch == '-' { tokens.push(Token { kind: TokenType::Minus, line: line, col: col, lexeme: lx }) }
+    if ch == '*' { tokens.push(Token { kind: TokenType::Star, line: line, col: col, lexeme: lx }) }
+    if ch == '/' { tokens.push(Token { kind: TokenType::Slash, line: line, col: col, lexeme: lx }) }
+    if ch == '%' { tokens.push(Token { kind: TokenType::Percent, line: line, col: col, lexeme: lx }) }
+    if ch == '=' { tokens.push(Token { kind: TokenType::Assign, line: line, col: col, lexeme: lx }) }
+    if ch == '<' { tokens.push(Token { kind: TokenType::Lt, line: line, col: col, lexeme: lx }) }
+    if ch == '>' { tokens.push(Token { kind: TokenType::Gt, line: line, col: col, lexeme: lx }) }
+    if ch == ':' { tokens.push(Token { kind: TokenType::Colon, line: line, col: col, lexeme: lx }) }
+    if ch == '.' { tokens.push(Token { kind: TokenType::Dot, line: line, col: col, lexeme: lx }) }
+    if ch == ',' { tokens.push(Token { kind: TokenType::Comma, line: line, col: col, lexeme: lx }) }
+    if ch == '(' { tokens.push(Token { kind: TokenType::LParen, line: line, col: col, lexeme: lx }) }
+    if ch == ')' { tokens.push(Token { kind: TokenType::RParen, line: line, col: col, lexeme: lx }) }
+    if ch == '{' { tokens.push(Token { kind: TokenType::LBrace, line: line, col: col, lexeme: lx }) }
+    if ch == '}' { tokens.push(Token { kind: TokenType::RBrace, line: line, col: col, lexeme: lx }) }
+    if ch == '[' { tokens.push(Token { kind: TokenType::LBracket, line: line, col: col, lexeme: lx }) }
+    if ch == ']' { tokens.push(Token { kind: TokenType::RBracket, line: line, col: col, lexeme: lx }) }
+    if ch == '|' { tokens.push(Token { kind: TokenType::Bar, line: line, col: col, lexeme: lx }) }
+    if ch == '&' { tokens.push(Token { kind: TokenType::Ampersand, line: line, col: col, lexeme: lx }) }
+    if ch == '?' { tokens.push(Token { kind: TokenType::Question, line: line, col: col, lexeme: lx }) }
+    -- 兜底
+    if ch != '+' and ch != '-' and ch != '*' and ch != '/' and ch != '%'
+       and ch != '=' and ch != '<' and ch != '>' and ch != ':'
+       and ch != '.' and ch != ',' and ch != '(' and ch != ')'
+       and ch != '{' and ch != '}' and ch != '[' and ch != ']'
+       and ch != '|' and ch != '&' and ch != '?' {
+        tokens.push(Token { kind: TokenType::Unknown, line: line, col: col, lexeme: lx })
+    }
+}

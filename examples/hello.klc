@@ -1,0 +1,2 @@
+println("Hello, KLC!")
+exit(0)

@@ -1,0 +1,16 @@
+-- test_map.klc — 测试映射和索引
+
+mod main
+use io
+
+fn main() {
+    io.println("=== KLC Map Test ===")
+
+    -- 测试映射字面量
+    let map = {"one": 1, "two": 2, "three": 3}
+    io.println("map = " ++ map.to_str())
+
+    -- 测试空映射
+    let empty = {}
+    io.println("empty = " ++ (if empty.len() == 0 { "empty" } else { "not empty" }))
+}
