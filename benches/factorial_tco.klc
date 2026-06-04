@@ -1,0 +1,21 @@
+-- factorial_tco.klc — 尾调用优化基准测试
+-- 尾递归阶乘: fact(n, acc) 在 n=1 时返回 acc
+-- 测试 TCO 将 call 转为 jmp，消除 5000 层递归的栈帧开销
+
+fn fact(n, acc) {
+    if n <= 1 { return acc }
+    return fact(n - 1, n * acc)
+}
+
+-- 外层循环 1000 次，每次递归 5000 层 → 共 500 万次函数调用
+-- 优化版 (TCO): 每次递归用 jmp (~1ns)
+-- 未优化版 (call): 每次递归需要 call+push+sub+add+pop+ret (~10ns)
+let mut sum = 0
+for i in 0..1000 {
+    let r = fact(5000, 1)
+    sum = sum + r - 1
+}
+if sum != 0 {
+    exit(1)
+}
+println("PASS")

@@ -1,0 +1,12 @@
+let mut sum = 0
+for i in 0..5000000 {
+    let c1 = 100 * 50
+    let c2 = c1 + 250
+    let c3 = c2 / 75
+    let c = c3 - 100
+    sum = sum + c
+}
+if sum != -150000000 {
+    exit(1)
+}
+println("PASS")
