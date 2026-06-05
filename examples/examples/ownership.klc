@@ -1,0 +1,78 @@
+-- ownership.klc — 展示 KLC 所有权系统
+
+mod main
+use io
+
+--- 定义数据持有者
+type Data {
+    id: i32
+    content: str
+}
+
+impl Data {
+    fn new(id: i32, content: str) -> Data = Data { id, content }
+
+    fn describe(self) -> str {
+        return "Data#" ++ self.id.to_str() ++ ": " ++ self.content
+    }
+}
+
+--- 获取所有权 - 消费 data
+fn consume(own data: Data) {
+    io.println("Consuming: " ++ data.describe())
+    -- data 在此处自动释放
+}
+
+--- 不可变借用 - 只读访问
+fn inspect(borrow data: Data) {
+    io.println("Inspecting: " ++ data.describe())
+    -- data.describe() 现在也是 borrow self
+}
+
+--- 可变借用 - 修改数据
+fn modify(borrow mut data: Data) {
+    data.content = "[modified] " ++ data.content
+    io.println("Modified: " ++ data.describe())
+}
+
+--- 借用的层级传播
+fn get_id(borrow data: Data) -> i32 = data.id
+
+fn main() {
+    io.println("=== KLC Ownership System Demo ===\n")
+
+    -- 1. 基础所有权
+    io.println("-- 1. Ownership Transfer --")
+    let d1 = Data::new(1, "original data")
+    consume(d1)  -- d1 所有权被移走
+    -- io.println(d1.content)  -- 编译错误！被移走
+
+    -- 2. 不可变借用
+    io.println("\n-- 2. Borrow (Read-Only) --")
+    let d2 = Data::new(2, "shared data")
+    inspect(d2)   -- 借出，不转移所有权
+    inspect(d2)   -- 可以多次借用
+    io.println("Still available: " ++ d2.describe())
+    -- d2 仍然可用
+
+    -- 3. 可变借用
+    io.println("\n-- 3. Mutable Borrow --")
+    let mut d3 = Data::new(3, "mutable data")
+    modify(d3)  -- 可变借用
+    -- 借用结束后，d3 所有权恢复
+    io.println("After modify: " ++ d3.describe())
+
+    -- 4. 借用传播
+    io.println("\n-- 4. Borrow Propagation --")
+    let d4 = Data::new(4, "propagation test")
+    let id = get_id(d4)   -- 借用 d4 取 id
+    io.println("Got ID: " ++ id.to_str())
+    io.println("Original still valid: " ++ d4.describe())
+
+    -- 5. 所有权检查（编译期保证）
+    -- let mut d5 = Data::new(5, "test")
+    -- modify(d5)
+    -- inspect(d5)  -- 编译错误！可变借用和不可变借用不能共存
+
+    io.println("\n=== All ownership checks passed! ===")
+}

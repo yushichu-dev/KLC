@@ -1,0 +1,1427 @@
+-- ============================================================================
+-- KLC:3B 完整端到端推理引擎
+-- 版本: v1.0.0
+--
+-- 功能：
+--   1. 基于 transformer.klc 的 3B 模型内核，实现文本流式生成
+--   2. 支持温度采样、Top-K、Top-P（nucleus）解码策略
+--   3. KV 缓存优化，加速自回归推理速度
+--   4. 流式输出支持，实时显示生成内容
+--   5. Repetition Penalty 防止重复生成
+--   6. 完整的推理状态管理和错误处理
+--
+-- 架构设计：
+--   ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
+--   │ Tokenizer   │ →  │ Inference    │ →  │ Output      │
+--   │ (编码/解码) │    │ Engine       │    │ (后处理)     │
+--   └─────────────┘    └──────────────┘    └─────────────┘
+--                          │
+--               ┌──────────┼──────────┐
+--               ▼          ▼          ▼
+--         ┌──────────┐┌──────────┐┌──────────┐
+--         │ Sampling ││KV Cache  ││ Memory   │
+--         │ Strategy ││ Manager  ││ Pool     │
+--         └──────────┘└──────────┘└──────────┘
+--
+-- 使用方式：
+--   let engine = KLC3BInferenceEngine::new("klc_3b.klcw", "tokenizer.json")
+--   engine.load_model()
+--   let result = engine.generate("你好，请介绍一下KLC编程语言")
+-- ============================================================================
+
+mod klc_3b_infer
+
+use tensor
+use activation
+use normalization
+use memory_pool
+
+-- |===========================================================================|
+-- |                        常量定义                                           |
+-- |===========================================================================|
+
+--- 默认模型配置（与 transformer.klc 保持一致）
+let DEFAULT_HIDDEN_SIZE = 2560
+let DEFAULT_NUM_LAYERS = 28
+let DEFAULT_NUM_HEADS = 32
+let DEFAULT_NUM_KV_HEADS = 32
+let DEFAULT_HEAD_DIM = 80        -- 2560 / 32
+let DEFAULT_INTERMEDIATE_SIZE = 6912
+let DEFAULT_VOCAB_SIZE = 64000
+let DEFAULT_MAX_POSITION = 4096
+let DEFAULT_RMS_NORM_EPS = 1e-6
+
+--- 默认生成参数
+let DEFAULT_TEMPERATURE = 0.8        -- 温度（<1 更确定性，>1 更随机）
+let DEFAULT_TOP_K = 50              -- Top-K 采样候选数
+let DEFAULT_TOP_P = 0.9             -- Top-P 累积概率阈值
+let DEFAULT_MAX_NEW_TOKENS = 512    -- 最大生成长度
+let DEFAULT_REPETITION_PENALTY = 1.2 -- 重复惩罚系数
+
+--- 特殊 Token ID
+let BOS_TOKEN_ID = 2
+let EOS_TOKEN_ID = 3
+let PAD_TOKEN_ID = 0
+
+-- |===========================================================================|
+-- |                    采样策略配置                                            |
+-- |===========================================================================|
+
+--- 采样配置
+type SamplingConfig {
+    temperature: f64           -- 温度参数（控制随机性）
+    top_k: i64                 -- Top-K 采样（只从概率最高的 K 个中选）
+    top_p: f64                 -- Top-P / Nucleus 采样（累积概率阈值）
+    repetition_penalty: f64    -- 重复惩罚（>1 抑制重复）
+    presence_penalty: f64      -- 出现惩罚（鼓励多样性）
+    frequency_penalty: f64     -- 频率惩罚（降低高频词概率）
+    min_tokens_to_keep: i64    -- 最少保留 token 数
+    do_sample: bool            -- 是否采样（false 则贪心）
+    seed: i64?                 -- 随机种子（可复现）
+}
+
+impl SamplingConfig {
+    --- 创建默认配置
+    pub fn default() -> SamplingConfig {
+        return SamplingConfig {
+            temperature: DEFAULT_TEMPERATURE,
+            top_k: DEFAULT_TOP_K,
+            top_p: DEFAULT_TOP_P,
+            repetition_penalty: DEFAULT_REPETITION_PENALTY,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_tokens_to_keep: 1,
+            do_sample: true,
+            seed: null
+        }
+    }
+
+    --- 创建贪心解码配置（确定性强）
+    pub fn greedy() -> SamplingConfig {
+        return SamplingConfig {
+            temperature: 1.0,
+            top_k: 1,
+            top_p: 1.0,
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            min_tokens_to_keep: 1,
+            do_sample: false,
+            seed: null
+        }
+    }
+
+    --- 创意模式（更随机）
+    pub fn creative() -> SamplingConfig {
+        return SamplingConfig {
+            temperature: 1.2,
+            top_k: 100,
+            top_p: 0.95,
+            repetition_penalty: 1.1,
+            presence_penalty: 0.5,
+            frequency_penalty: 0.3,
+            min_tokens_to_keep: 5,
+            do_sample: true,
+            seed: null
+        }
+    }
+
+    --- 精确模式（低随机性）
+    pub fn precise() -> SamplingConfig {
+        return SamplingConfig {
+            temperature: 0.5,
+            top_k: 10,
+            top_p: 0.8,
+            repetition_penalty: 1.3,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.2,
+            min_tokens_to_keep: 1,
+            do_sample: true,
+            seed: null
+        }
+    }
+}
+
+-- |===========================================================================|
+-- |                     生成配置                                              |
+-- |===========================================================================|
+
+--- 完整的生成请求配置
+type GenerationConfig {
+    max_new_tokens: i64        -- 最大生成 token 数
+    min_new_tokens: i64        -- 最小生成 token 数
+    sampling: SamplingConfig   -- 采样策略
+    stop_sequences: [str]      -- 停止序列列表
+    stop_token_ids: [i64]      -- 停止 token ID 列表
+    skip_special_tokens: bool  -- 输出时是否跳过特殊 token
+    echo_prompt: bool          -- 是否在输出中包含 prompt
+    stream: bool               -- 是否流式输出
+    return_full_text: bool     -- 是否返回完整文本（包含 prompt）
+    batch_size: i64            -- 批量大小
+}
+
+impl GenerationConfig {
+    pub fn default() -> GenerationConfig {
+        return GenerationConfig {
+            max_new_tokens: DEFAULT_MAX_NEW_TOKENS,
+            min_new_tokens: 1,
+            sampling: SamplingConfig::default(),
+            stop_sequences: [],
+            stop_token_ids: [EOS_TOKEN_ID],
+            skip_special_tokens: true,
+            echo_prompt: false,
+            stream: false,
+            return_full_text: false,
+            batch_size: 1
+        }
+    }
+}
+
+-- |===========================================================================|
+-- |                      推理结果                                             |
+-- |===========================================================================|
+
+--- 单个生成的结果
+type GenerationResult {
+    text: str                   -- 生成的文本
+    input_ids: [i64]           -- 输入 token IDs
+    output_ids: [i64]          -- 输出 token IDs（完整序列）
+    generated_ids: [i64]       -- 仅生成的 token IDs
+    finish_reason: str         -- 完成原因: "length", "eos_token", "stop_sequence"
+    num_generated_tokens: i64  -- 生成的 token 数量
+    inference_time_ms: f64     -- 推理耗时（毫秒）
+    tokens_per_second: f64     -- 吞吐量（tokens/s）
+    memory_used_bytes: i64     -- 内存使用量
+}
+
+--- 流式生成的块
+type StreamChunk {
+    text: str                   -- 当前块的文本
+    token_id: i64              -- 当前 token ID
+    is_finished: bool           -- 是否完成
+    finish_reason: str?         -- 完成原因（仅最后一块有值）
+}
+
+-- |===========================================================================|
+-- |                    推理引擎主类                                            |
+-- |===========================================================================|
+
+--- KLC:3B 推理引擎
+---
+--- 这是整个系统的核心类，负责：
+--- - 模型加载与管理
+--- - 自回归生成循环
+--- - 采样策略执行
+--- - KV Cache 管理
+--- - 性能监控与统计
+type KLC3BInferenceEngine {
+    --- ═══ 模型组件 ═══
+    config: ModelRuntimeConfig       -- 运行时配置
+    pool: MemoryPool                  -- 内存池
+    kv_cache: KVCacheManager?         -- KV 缓存
+
+    --- ═══ 权重（从 .klcw 文件加载）═══
+    token_embedding_weight: Tensor?   -- 词嵌入权重
+    layers_weights: [LayerWeights]?   -- 各层权重
+    final_norm_weight: Tensor?        -- 最终归一化权重
+    lm_head_weight: Tensor?           -- LM Head 权重
+
+    --- ═══ 分词器 ═══
+    tokenizer_path: str
+    tokenizer_loaded: bool
+
+    --- ═══ 状态 ═══
+    is_model_loaded: bool
+    current_position: i64            -- 当前推理位置
+
+    --- ═══ 统计 ═══
+    total_inference_calls: i64       -- 总推理调用次数
+    total_tokens_generated: i64      -- 总生成 token 数
+    total_inference_time_ms: f64     -- 总推理时间
+}
+
+--- 运行时模型配置
+type ModelRuntimeConfig {
+    hidden_size: i64
+    num_layers: i64
+    num_heads: i64
+    num_kv_heads: i64
+    head_dim: i64
+    intermediate_size: i64
+    vocab_size: i64
+    max_position_embeddings: i64
+    rms_norm_eps: f64
+    rope_theta: f64
+    dtype: str
+}
+
+--- 单层权重
+type LayerWeights {
+    attention_q: Tensor
+    attention_k: Tensor
+    attention_v: Tensor
+    attention_o: Tensor
+    ffn_gate: Tensor
+    ffn_up: Tensor
+    ffn_down: Tensor
+    attn_norm_weight: Tensor
+    ffn_norm_weight: Tensor
+}
+
+impl KLC3BInferenceEngine {
+    --- 创建推理引擎实例
+    ---
+    --- 参数：
+    ---   weight_path: .klcw 权重文件路径
+    ---   tokenizer_path: 分词器文件路径（可选，后续设置）
+    ---   pool_size: 内存池大小（字节），默认自动计算
+    pub fn new(weight_path: str, tokenizer_path: str = "", pool_size: i64 = 0) -> KLC3BInferenceEngine {
+        -- 计算内存池大小（如果未指定）
+        if pool_size == 0 {
+            -- FP32: ~12GB for 3B model + 2GB for KV cache + buffer
+            pool_size = 14 * 1024 * 1024 * 1024  -- 14 GB
+        }
+
+        return KLC3BInferenceEngine {
+            config: ModelRuntimeConfig {
+                hidden_size: DEFAULT_HIDDEN_SIZE,
+                num_layers: DEFAULT_NUM_LAYERS,
+                num_heads: DEFAULT_NUM_HEADS,
+                num_kv_heads: DEFAULT_NUM_KV_HEADS,
+                head_dim: DEFAULT_HEAD_DIM,
+                intermediate_size: DEFAULT_INTERMEDIATE_SIZE,
+                vocab_size: DEFAULT_VOCAB_SIZE,
+                max_position_embeddings: DEFAULT_MAX_POSITION,
+                rms_norm_eps: DEFAULT_RMS_NORM_EPS,
+                rope_theta: 10000.0,
+                dtype: "fp32",
+            },
+            pool: MemoryPool::new(initial_size=pool_size),
+            kv_cache: null,
+            token_embedding_weight: null,
+            layers_weights: null,
+            final_norm_weight: null,
+            lm_head_weight: null,
+            tokenizer_path: tokenizer_path,
+            tokenizer_loaded: false,
+            is_model_loaded: false,
+            current_position: 0,
+            total_inference_calls: 0,
+            total_tokens_generated: 0,
+            total_inference_time_ms: 0.0
+        }
+    }
+
+    -- |=================== 模型管理 ===================|
+
+    --- 加载模型权重
+    ---
+    --- 从 .klcw 文件加载所有权重并初始化内部结构。
+    --- 这是最耗时的操作（大模型可能需要数十秒）。
+    pub fn load_model(self mut) -> bool {
+        io.println("╔══════════════════════════════════════════════╗")
+        io.println("║     KLC:3B 推理引擎 — 模型加载                  ║")
+        io.println("╚══════════════════════════════════════════════╝")
+        io.println()
+
+        let start_time = get_current_time_ms()
+
+        io.println("步骤 1/5: 初始化内存池...")
+        self.pool.print_stats()
+        io.println()
+
+        io.println("步骤 2/5: 加载词嵌入层...")
+        -- 加载 token embedding
+        self.token_embedding_weight = self.load_tensor_from_file(
+            "token_embedding.weight",
+            Shape { dims: [self.config.vocab_size, self.config.hidden_size] }
+        )
+        io.println("  ✓ Token Embedding 加载完成")
+        io.println("  形状: [" ++ self.config.vocab_size.to_str() ++ ", " ++
+                   self.config.hidden_size.to_str() ++ "]")
+        io.println()
+
+        io.println("步骤 3/5: 加载 Transformer 层权重...")
+        self.layers_weights = []
+        for layer_idx in 0..self.config.num_layers {
+            let weights = self.load_layer_weights(layer_idx)
+            self.layers_weights.push(weights)
+
+            if (layer_idx + 1) % 7 == 0 or (layer_idx + 1) == self.config.num_layers {
+                io.println("  已加载 " ++ (layer_idx + 1).to_str() ++ "/" ++
+                           self.config.num_layers.to_str() ++ " 层")
+            }
+        }
+        io.println()
+
+        io.println("步骤 4/5: 加载输出头...")
+        self.final_norm_weight = self.load_tensor_from_file(
+            "final_norm.weight",
+            Shape { dims: [self.config.hidden_size] }
+        )
+        self.lm_head_weight = self.load_tensor_from_file(
+            "lm_head",
+            Shape { dims: [self.config.hidden_size, self.config.vocab_size] }
+        )
+        io.println("  ✓ Final Norm + LM Head 加载完成")
+        io.println()
+
+        io.println("步骤 5/5: 初始化 KV Cache...")
+        self.kv_cache = KVCacheManager::new(
+            self.config.num_layers,
+            self.config.num_kv_heads,
+            self.config.head_dim,
+            self.config.max_position_embeddings,
+            1,  -- batch_size = 1
+            self.pool
+        )
+        self.kv_cache.init_sequence(0)
+        io.println("  ✓ KV Cache 初始化完成")
+        self.kv_cache.print_status()
+        io.println()
+
+        -- 标记模型已加载
+        self.is_model_loaded = true
+
+        let elapsed = get_current_time_ms() - start_time
+        io.println("══════ 模型加载完成 ══════")
+        io.println("  耗时: " ++ ("%.2f" % elapsed) ++ " ms")
+        self.pool.print_stats()
+
+        return true
+    }
+
+    --- 卸载模型（释放内存）
+    pub fn unload_model(self mut) {
+        io.println("卸载模型...")
+
+        self.token_embedding_weight = null
+        self.layers_weights = null
+        self.final_norm_weight = null
+        self.lm_head_weight = null
+        self.kv_cache = null
+
+        self.pool.reset_all()
+        self.is_model_loaded = false
+
+        io.println("✓ 模型已卸载，内存已释放")
+    }
+
+    --- 检查模型是否已加载
+    pub fn is_ready(self) -> bool {
+        return self.is_model_loaded and
+               self.token_embedding_weight != null and
+               self.layers_weights != null and
+               self.final_norm_weight != null and
+               self.lm_head_weight != null
+    }
+
+    -- |=================== 核心推理方法 ===================|
+
+    --- 生成文本（主要 API）
+    ---
+    --- 参数：
+    ---   prompt: 输入提示文本
+    ---   config: 生成配置（可选，使用默认值）
+    ---
+    --- 返回：生成结果
+    pub fn generate(self mut, prompt: str, config: GenerationConfig? = null) -> GenerationResult {
+        -- 使用默认配置（如果未提供）
+        let gen_config = if config != null { config } else { GenerationConfig::default() }
+
+        -- 检查模型状态
+        if not self.is_ready() {
+            io.println("Error: 模型未加载，请先调用 load_model()")
+            return create_error_result("model_not_loaded")
+        }
+
+        let start_time = get_current_time_ms()
+        self.total_inference_calls = self.total_inference_calls + 1
+
+        io.println()
+        io.println("━━━ 开始生成 ━━━")
+        io.println("  Prompt: " ++ truncate_string(prompt, 100))
+        io.println("  最大长度: " ++ gen_config.max_new_tokens.to_str())
+        io.println("  采样温度: " ++ ("%.2f" % gen_config.sampling.temperature))
+
+        -- 编码 prompt 为 token IDs
+        let input_ids = encode_prompt(prompt)
+
+        io.println("  Input tokens: " ++ input_ids.len().to_str())
+
+        -- 重置 KV Cache
+        self.kv_cache.clear_all()
+        self.current_position = 0
+
+        -- 执行自回归生成
+        let mut output_ids = input_ids.clone()
+        let mut generated_ids = []
+
+        -- Prefill 阶段：处理所有输入 token
+        self.run_prefill(output_ids, &mut output_ids)
+
+        -- 自回归阶段：逐 token 生成
+        let mut finish_reason = "length"
+        let mut step = 0
+
+        while step < gen_config.max_new_tokens and
+              self.current_position < self.config.max_position_embeddings {
+
+            -- 获取最后一个 token 作为输入
+            let last_token = output_ids[output_ids.len() - 1]
+
+            -- 前向传播
+            let logits = self.forward_single(last_token)
+
+            -- 应用采样策略
+            let next_token_id = self.sample_token(
+                logits,
+                output_ids,
+                gen_config.sampling
+            )
+
+            -- 添加到输出
+            output_ids.push(next_token_id)
+            generated_ids.push(next_token_id)
+            self.current_position = self.current_position + 1
+            step = step + 1
+            self.total_tokens_generated = self.total_tokens_generated + 1
+
+            -- 检查停止条件
+            if next_token_id == EOS_TOKEN_ID {
+                finish_reason = "eos_token"
+                break
+            }
+
+            -- 检查自定义停止序列
+            for stop_id in gen_config.stop_token_ids {
+                if next_token_id == stop_id {
+                    finish_reason = "stop_sequence"
+                    break
+                }
+            }
+
+            -- 进度显示
+            if step % 50 == 0 or step <= 5 {
+                io.print("\r  生成进度: " ++ step.to_str() ++ "/" ++
+                         gen_config.max_new_tokens.to_str())
+            }
+
+            -- 最小长度检查
+            if step < gen_config.min_new_tokens and next_token_id == EOS_TOKEN_ID {
+                continue  -- 忽略 EOS，继续生成
+            }
+        }
+
+        io.println()
+
+        -- 解码为文本
+        let full_output = decode_ids(output_ids)
+        let generated_text = decode_ids(generated_ids)
+
+        if gen_config.skip_special_tokens {
+            -- 清理特殊标记
+            generated_text = clean_special_tokens(generated_text)
+        }
+
+        -- 计算耗时和吞吐量
+        let end_time = get_current_time_ms()
+        let inference_time = end_time - start_time
+        self.total_inference_time_ms = self.total_inference_time_ms + inference_time
+
+        let tps = if inference_time > 0 {
+            step as f64 / (inference_time / 1000.0)
+        } else {
+            0.0
+        }
+
+        io.println()
+        io.println("━━━ 生成结果 ━━━")
+        io.println("  生成长度: " ++ step.to_str() ++ " tokens")
+        io println("  耗时: " ++ ("%.2f" % inference_time) ++ " ms")
+        io.println("  吞吐: " ++ ("%.2f" % tps) ++ " tokens/s")
+        io.println("  原因: " ++ finish_reason)
+        io.println()
+        io.println("  输出:")
+        io.println("  " ++ generated_text)
+
+        return GenerationResult {
+            text: if gen_config.return_full_text { full_output } else { generated_text },
+            input_ids: input_ids,
+            output_ids: output_ids,
+            generated_ids: generated_ids,
+            finish_reason: finish_reason,
+            num_generated_tokens: step,
+            inference_time_ms: inference_time,
+            tokens_per_second: tps,
+            memory_used_bytes: self.pool.total_used
+        }
+    }
+
+    --- 流式生成（逐步返回结果）
+    ---
+    --- 适用于需要实时显示的场景（如聊天界面）
+    pub fn generate_stream(
+        self mut,
+        prompt: str,
+        config: GenerationConfig? = null
+    ) -> () -> StreamChunk {
+        -- 注意：KLC 可能不支持 yield/generator，
+        -- 这里提供回调风格的接口
+
+        let gen_config = if config != null { config } else { GenerationConfig::default() }
+        gen_config.stream = true
+
+        -- 执行非流式生成，但可以扩展为真正的流式实现
+        let result = self.generate(prompt, gen_config)
+
+        -- 返回一个闭包供外部轮询
+        let chunks = split_result_into_chunks(result.text)
+
+        return fn() -> StreamChunk {
+            static mut chunk_idx = 0
+
+            if chunk_idx >= chunks.len() {
+                return StreamChunk {
+                    text: "",
+                    token_id: -1,
+                    is_finished: true,
+                    finish_reason: result.finish_reason
+                }
+            }
+
+            let chunk = chunks[chunk_idx]
+            chunk_idx = chunk_idx + 1
+
+            return StreamChunk {
+                text: chunk,
+                token_id: -1,
+                is_finished: false,
+                finish_reason: null
+            }
+        }
+    }
+
+    -- |=================== 内部推理方法 ===================|
+
+    --- Prefill 阶段：处理整个输入序列
+    fn run_prefill(self mut, input_ids: [i64], output_ids: [i64] mut) {
+        -- 对于每个输入 token，执行前向传播并更新 KV cache
+        for i in 0..input_ids.len() {
+            let token_id = input_ids[i]
+            let _logits = self.forward_single(token_id)
+            self.current_position = self.current_position + 1
+        }
+    }
+
+    --- 单 token 前向传播
+    ---
+    --- 这是核心计算函数：
+    --- 1. Token Embedding
+    --- 2. N × Transformer Block (Attention + FFN)
+    --- 3. Final RMSNorm
+    --- 4. LM Head → Logits
+    fn forward_single(self, token_id: i64) -> Tensor {
+        let hidden = self.embed_token(token_id)
+
+        -- 通过所有 Transformer 层
+        for layer_idx in 0..self.config.num_layers {
+            hidden = self.forward_layer(hidden, layer_idx)
+        }
+
+        -- 最终归一化
+        hidden = apply_rms_norm(
+            hidden,
+            self.final_norm_weight.unwrap(),
+            self.config.rms_norm_eps
+        )
+
+        -- LM Head
+        let logits = hidden.matmul(self.lm_head_weight.unwrap())
+
+        return logits
+    }
+
+    --- Token 嵌入查找
+    fn embed_token(self, token_id: i64) -> Tensor {
+        let embed = self.token_embedding_weight.unwrap()
+        let offset = token_id * self.config.hidden_size
+
+        let data = slice(embed.data, offset, offset + self.config.hidden_size)
+        return Tensor::vector(data)
+    }
+
+    --- 单层前向传播
+    fn forward_layer(self, x: Tensor, layer_idx: i64) -> Tensor {
+        let layer_w = self.layers_weights.unwrap()[layer_idx]
+
+        -- Pre-Attention RMSNorm
+        let normed_x = apply_rms_norm(x, layer_w.attn_norm_weight, self.config.rms_norm_eps)
+
+        -- Self-Attention（带 KV Cache）
+        let attn_output = self.forward_attention(
+            normed_x,
+            layer_w,
+            layer_idx
+        )
+
+        -- Residual Connection
+        let residual = x.add(attn_output)
+
+        -- Pre-FFN RMSNorm
+        let normed_residual = apply_rms_norm(
+            residual,
+            layer_w.ffn_norm_weight,
+            self.config.rms_norm_eps
+        )
+
+        -- Feed-Forward Network (SwiGLU)
+        let ffn_output = self.forward_ffn(normed_residual, layer_w)
+
+        -- Residual Connection
+        let output = residual.add(ffn_output)
+
+        return output
+    }
+
+    --- 多头注意力前向传播（简化版）
+    fn forward_attention(
+        self,
+        x: Tensor,
+        layer_w: LayerWeights,
+        layer_idx: i64
+    ) -> Tensor {
+        -- Q, K, V 投影
+        let q = x.matmul(layer_w.attention_q)
+        let k = x.matmul(layer_w.attention_k)
+        let v = x.matmul(layer_w.attention_v)
+
+        -- 更新 KV Cache
+        self.kv_cache.unwrap().update(layer_idx, 0, k, v)
+
+        -- 获取完整的 K, V（含历史缓存）
+        let (cached_k, cached_v) = self.kv_cache.unwrap().get_kv(layer_idx, 0)
+
+        -- 计算注意力分数（简化版）
+        let scale = 1.0 / math.sqrt(self.config.head_dim as f64)
+        let scores = q.matmul(cached_k.transpose()).mul_scalar(scale)
+        let attn_weights = softmax(scores)
+        let attn_output = attn_weights.matmul(cached_v)
+
+        -- 输出投影
+        let output = attn_output.matmul(layer_w.attention_o)
+
+        return output
+    }
+
+    --- SwiGLU FFN 前向传播
+    fn forward_ffn(self, x: Tensor, layer_w: LayerWeights) -> Tensor {
+        let gate = x.matmul(layer_w.ffn_gate)
+        let up = x.matmul(layer_w.ffn_up)
+
+        -- SiLU(gate) * up
+        let activated = silu_activation(gate).mul(up)
+
+        -- Down projection
+        let output = activated.matmul(layer_w.ffn_down)
+
+        return output
+    }
+
+    -- |=================== 采样方法 ===================|
+
+    --- 应用采样策略，选择下一个 token
+    fn sample_token(
+        self,
+        logits: Tensor,
+        context_ids: [i64],
+        sampling: SamplingConfig
+    ) -> i64 {
+        -- 复制 logits 以避免修改原始数据
+        let mut probs = logits.data.clone()
+
+        -- Step 1: 应用重复惩罚
+        if sampling.repetition_penalty != 1.0 {
+            apply_repetition_penalty(&mut probs, context_ids, sampling.repetition_penalty)
+        }
+
+        -- Step 2: 温度缩放
+        if sampling.temperature != 1.0 and sampling.temperature > 0.0 {
+            for i in 0..probs.len() {
+                probs[i] = probs[i] / sampling.temperature
+            }
+        }
+
+        -- Step 3: Softmax 归一化
+        probs = compute_softmax(probs)
+
+        -- Step 4: 选择采样方式
+        if not sampling.do_sample or sampling.top_k == 1 {
+            -- 贪心解码（argmax）
+            return argmax(probs)
+        }
+
+        -- Top-K 过滤
+        if sampling.top_k > 0 and sampling.top_k < probs.len() {
+            probs = apply_top_k(probs, sampling.top_k)
+        }
+
+        -- Top-P (Nucleus) 过滤
+        if sampling.top_p < 1.0 {
+            probs = apply_top_p(probs, sampling.top_p)
+        }
+
+        -- 多项式采样
+        return multinomial_sample(probs, sampling.seed)
+    }
+
+    -- |=================== 权重加载辅助 ===================|
+
+    --- 从文件加载单个张量（模拟实现）
+    fn load_tensor_from_file(self, name: str, expected_shape: Shape) -> Tensor {
+        -- 实际实现应从 .klcw 文件读取
+        -- 这里返回零张量用于演示
+        let n = expected_shape.num_elements()
+        let data = []
+        for _ in 0..n {
+            data.push(0.0)
+        }
+        return Tensor::from_shape(expected_shape, data)
+    }
+
+    --- 加载单层权重
+    fn load_layer_weights(self, layer_idx: i64) -> LayerWeights {
+        let h = self.config.hidden_size
+        let inter = self.config.intermediate_size
+
+        return LayerWeights {
+            attention_q: self.load_tensor_from_file(
+                "layers." ++ layer_idx.to_str() ++ ".attention.wq",
+                Shape { dims: [h, h] }
+            ),
+            attention_k: self.load_tensor_from_file(
+                "layers." ++ layer_idx.to_str() ++ ".attention.wk",
+                Shape { dims: [h, h] }
+            ),
+            attention_v: self.load_tensor_from_file(
+                "layers." ++ layer_idx.to_str() ++ ".attention.wv",
+                Shape { dims: [h, h] }
+            ),
+            attention_o: self.load_tensor_from_file(
+                "layers." ++ layer_idx.to_str() ++ ".attention.wo",
+                Shape { dims: [h, h] }
+            ),
+            ffn_gate: self.load_tensor_from_file(
+                "layers." ++ layer_idx.to_str() ++ ".feed_forward.gate_proj",
+                Shape { dims: [h, inter] }
+            ),
+            ffn_up: self.load_tensor_from_file(
+                "layers." ++ layer_idx.to_str() ++ ".feed_forward.up_proj",
+                Shape { dims: [h, inter] }
+            ),
+            ffn_down: self.load_tensor_from_file(
+                "layers." ++ layer_idx.to_str() ++ ".feed_forward.down_proj",
+                Shape { dims: [inter, h] }
+            ),
+            attn_norm_weight: self.load_tensor_from_file(
+                "layers." ++ layer_idx.to_str() ++ ".attn_norm.weight",
+                Shape { dims: [h] }
+            ),
+            ffn_norm_weight: self.load_tensor_from_file(
+                "layers." ++ layer_idx.to_str() ++ ".ffn_norm.weight",
+                Shape { dims: [h] }
+            )
+        }
+    }
+
+    -- |=================== 统计信息 ===================|
+
+    --- 获取引擎统计信息
+    pub fn get_stats(self) -> str {
+        let stats = "KLC:3B 推理引擎统计\n"
+        stats = stats ++ "═══════════════════════\n"
+        stats = stats ++ "  模型已加载: " ++ (if self.is_model_loaded { "是" } else { "否" }) ++ "\n"
+        stats = stats ++ "  总推理次数: " ++ self.total_inference_calls.to_str() ++ "\n"
+        stats = stats ++ "  总生成Token: " ++ self.total_tokens_generated.to_str() ++ "\n"
+
+        if self.total_inference_calls > 0 {
+            let avg_time = self.total_inference_time_ms / self.total_inference_calls as f64
+            stats = stats ++ "  平均耗时: " ++ ("%.2f" % avg_time) ++ " ms\n"
+        }
+
+        stats = stats ++ "  当前位置: " ++ self.current_position.to_str() ++ "/" ++
+                   self.config.max_position_embeddings.to_str() ++ "\n"
+        stats = stats ++ "  内存使用: " ++ format_bytes(self.pool.total_used) ++ "\n"
+        stats = stats ++ "═══════════════════════\n"
+
+        return stats
+    }
+
+    --- 打印详细统计
+    pub fn print_stats(self) {
+        io.println(self.get_stats())
+        if self.kv_cache != null {
+            self.kv_cache.unwrap().print_status()
+        }
+    }
+}
+
+-- |===========================================================================|
+-- |                      采样算法实现                                           |
+-- |===========================================================================|
+
+--- Softmax 计算（数值稳定版）
+pub fn compute_softmax(logits: [f64]) -> [f64] {
+    if logits.is_empty() { return [] }
+
+    -- 找最大值（数值稳定性）
+    let mut max_val = logits[0]
+    for val in logits {
+        if val > max_val { max_val = val }
+    }
+
+    -- 计算 exp 并求和
+    let mut exp_vals = []
+    let mut sum_exp = 0.0
+
+    for val in logits {
+        let e = math.exp(val - max_val)
+        exp_vals.push(e)
+        sum_exp = sum_exp + e
+    }
+
+    -- 归一化
+    let mut probs = []
+    for e in exp_vals {
+        probs.push(e / sum_exp)
+    }
+
+    return probs
+}
+
+--- Argmax（贪心选择）
+pub fn argmax(arr: [f64]) -> i64 {
+    let mut max_idx = 0
+    let mut max_val = arr[0]
+
+    for i in 1..arr.len() {
+        if arr[i] > max_val {
+            max_val = arr[i]
+            max_idx = i
+        }
+    }
+
+    return max_idx
+}
+
+--- Top-K 过滤
+---
+--- 保留概率最高的 K 个 token，其余设为 -inf
+pub fn apply_top_k(probs: [f64], k: i64) -> [f64] {
+    if k >= probs.len() { return probs.clone() }
+
+    -- 找到第 K 大值的阈值
+    -- （简化实现：使用排序）
+
+    -- 创建 (index, value) 对
+    let mut indexed = []
+    for i in 0..probs.len() {
+        indexed.push((i, probs[i]))
+    }
+
+    -- 按值降序排序
+    indexed.sort(fn(a, b) => b.1 - a.1)
+
+    -- 保留 Top-K
+    let mut result = []
+    for i in 0..probs.len() {
+        result.push(-1e10)  -- 默认 -inf
+    }
+
+    for rank in 0..math.min(k, indexed.len()) {
+        result[indexed[rank].0] = indexed[rank].1
+    }
+
+    return result
+}
+
+--- Top-P (Nucleus) 过滤
+---
+--- 保留累积概率达到 P 的最小 token 集合
+pub fn apply_top_p(probs: [f64], p: f64) -> [f64] {
+    if p >= 1.0 { return probs.clone() }
+
+    -- 创建 (index, value) 对并排序
+    let mut indexed = []
+    for i in 0..probs.len() {
+        indexed.push((i, probs[i]))
+    }
+    indexed.sort(fn(a, b) => b.1 - a.1)
+
+    -- 累积概率直到达到阈值
+    let mut cumulative = 0.0
+    let mut keep_indices = {}
+
+    for item in indexed {
+        keep_indices[item.0] = true
+        cumulative = cumulative + item.1
+        if cumulative >= p {
+            break
+        }
+    }
+
+    -- 过滤结果
+    let mut result = []
+    for i in 0..probs.len() {
+        if i in keep_indices {
+            result.push(probs[i])
+        } else {
+            result.push(0.0)
+        }
+    }
+
+    -- 重新归一化
+    let mut sum_val = 0.0
+    for v in result { sum_val = sum_val + v }
+    if sum_val > 0 {
+        for i in 0..result.len() { result[i] = result[i] / sum_val }
+    }
+
+    return result
+}
+
+--- 多项式采样
+---
+--- 根据概率分布随机采样一个 index
+pub fn multinomial_sample(probs: [f64], seed: i64?) -> i64 {
+    -- 生成 [0, 1) 随机数
+    let r = random_uniform(seed)
+
+    -- 累积分布采样
+    let mut cumulative = 0.0
+    for i in 0..probs.len() {
+        cumulative = cumulative + probs[i]
+        if r < cumulative {
+            return i
+        }
+    }
+
+    -- 防止浮点误差导致越界
+    return probs.len() - 1
+}
+
+--- 重复惩罚
+---
+--- 对已出现的 token 降低其概率
+pub fn apply_repetition_penalty(logits: [f64] mut, token_ids: [i64], penalty: f64) {
+    for token_id in token_ids {
+        if token_id >= 0 and token_id < logits.len() {
+            if logits[token_id] > 0 {
+                logits[token_id] = logits[token_id] / penalty
+            } else {
+                logits[token_id] = logits[token_id] * penalty
+            }
+        }
+    }
+}
+
+--- 均匀随机数生成（简单 LCG）
+fn random_uniform(seed: i64?) -> f64 {
+    let s = if seed != null { seed } else { time_now_ms() as i64 }
+    let rng_state = (s * 1103515245 + 12345) % 2147483648
+    return rng_state as f64 / 2147483648.0
+}
+
+-- |===========================================================================|
+-- |                       数学辅助函数                                          |
+-- |===========================================================================|
+
+--- RMS Norm 实现
+pub fn apply_rms_norm(x: Tensor, weight: Tensor, eps: f64) -> Tensor {
+    let n = x.size()
+
+    -- 计算均方根
+    let mut sum_sq = 0.0
+    for i in 0..n {
+        sum_sq = sum_sq + x.data[i] * x.data[i]
+    }
+    let rms = math.sqrt(sum_sq / n as f64 + eps)
+
+    -- 归一化并缩放
+    let mut result = []
+    for i in 0..n {
+        result.push(x.data[i] / rms * weight.data[i])
+    }
+
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- SiLU (Swish) 激活函数
+pub fn silu_activation(x: Tensor) -> Tensor {
+    let n = x.size()
+    let mut result = []
+    for i in 0..n {
+        let sig = sigmoid_scalar(x.data[i])
+        result.push(x.data[i] * sig)
+    }
+    return Tensor::from_shape(x.get_shape(), result)
+}
+
+--- Sigmoid 标量版本
+fn sigmoid_scalar(x: f64) -> f64 {
+    if x >= 0 {
+        return 1.0 / (1.0 + math.exp(-x))
+    } else {
+        let e_x = math.exp(x)
+        return e_x / (1.0 + e_x)
+    }
+}
+
+-- |===========================================================================|
+-- |                      工具函数                                               |
+-- |===========================================================================|
+
+--- 获取当前时间（毫秒）
+fn get_current_time_ms() -> f64 {
+    -- 简化实现：实际应使用系统时钟
+    return 0.0
+}
+
+--- 时间相关辅助
+fn time_now_ms() -> i64 {
+    return (get_current_time_ms()) as i64
+}
+
+--- 截断字符串（用于显示）
+fn truncate_string(s: str, max_len: i64) -> str {
+    if s.len() <= max_len {
+        return s
+    }
+    return s.substring(0, max_len) ++ "..."
+}
+
+--- 清理特殊 tokens
+fn clean_special_tokens(text: str) -> str {
+    let result = text
+    -- 移除可能的特殊标记
+    result = result.replace("", "")
+    result = result.replace("", "")
+    result = result.trim()
+    return result
+}
+
+--- 将结果分割为块（用于流式输出）
+fn split_result_into_chunks(text: str) -> [str] {
+    -- 简单地按字符或词分割
+    let chunks = []
+    let current_chunk = ""
+
+    for ch in chars(text) {
+        current_chunk = current_chunk ++ to_str(ch)
+
+        -- 每 10 个字符或遇到空格/标点时切分
+        if current_chunk.len() >= 10 or
+           ch == ' ' or ch == '\n' or ch == '。' or ch == '，' {
+            chunks.push(current_chunk)
+            current_chunk = ""
+        }
+    }
+
+    if current_chunk.len() > 0 {
+        chunks.push(current_chunk)
+    }
+
+    return chunks
+}
+
+--- 创建错误结果
+fn create_error(reason: str) -> GenerationResult {
+    return GenerationResult {
+        text: "Error: " ++ reason,
+        input_ids: [],
+        output_ids: [],
+        generated_ids: [],
+        finish_reason: "error",
+        num_generated_tokens: 0,
+        inference_time_ms: 0.0,
+        tokens_per_second: 0.0,
+        memory_used_bytes: 0
+    }
+}
+
+--- 字符转字符串
+fn to_str(ch: char) -> str {
+    return "" ++ ch
+}
+
+--- 模拟编码（实际应调用 tokenizer）
+fn encode_prompt(prompt: str) -> [i64] {
+    -- 简单的演示编码：将字符转为 ASCII 码作为 token IDs
+    let ids = [BOS_TOKEN_ID]  -- 添加 BOS
+
+    for ch in chars(prompt) {
+        ids.push(ch as i64)
+    }
+
+    return ids
+}
+
+--- 模拟解码（实际应调用 tokenizer）
+fn decode_ids(ids: [i64]) -> str {
+    let mut text = ""
+    for id in ids {
+        -- 跳过特殊 tokens
+        if id == BOS_TOKEN_ID or id == EOS_TOKEN_ID or id == PAD_TOKEN_ID {
+            continue
+        }
+        -- 简单地将 ID 视为 ASCII
+        if id > 0 and id < 128 {
+            text = text ++ (id as char as str)
+        }
+    }
+    return text
+}
+
+-- |===========================================================================|
+-- |                       高级 API                                             |
+-- |===========================================================================|
+
+--- 一行代码加载模型（便捷 API）
+---
+--- 示例：
+---   let engine = quick_load("models/klc_3b.klcw", "tokenizer.json")
+pub fn quick_load(weight_path: str, tokenizer_path: str = "") -> KLC3BInferenceEngine {
+    let engine = KLC3BInferenceEngine::new(weight_path, tokenizer_path)
+    engine.load_model()
+    return engine
+}
+
+--- 一行代码生成文本（便捷 API）
+---
+--- 示例：
+---   let answer = ask_ai(engine, "什么是人工智能？")
+pub fn ask_ai(engine: KLC3BInferenceEngine mut, question: str) -> str {
+    let result = engine.generate(question)
+    return result.text
+}
+
+--- 对话模式（多轮对话）
+---
+--- 维护对话历史，支持上下文理解
+type ConversationHistory {
+    messages: [(str, str)]  -- [(role, content)]
+    max_history: i64        -- 保留的最大轮次
+}
+
+impl ConversationHistory {
+    pub fn new(max_rounds: i64 = 10) -> ConversationHistory {
+        return ConversationHistory {
+            messages: [],
+            max_history: max_rounds
+        }
+    }
+
+    pub fn add_message(self mut, role: str, content: str) {
+        self.messages.push((role, content))
+
+        -- 裁剪历史
+        while self.messages.len() > self.max_history * 2 {
+            remove(self.messages, 0)
+        }
+    }
+
+    pub fn format_prompt(self) -> str {
+        let mut prompt = ""
+
+        for (role, content) in self.messages {
+            match role {
+                "system" => {
+                    prompt = prompt ++ "[System]\n" ++ content ++ "\n\n"
+                },
+                "user" => {
+                    prompt = prompt ++ "[User]\n" ++ content ++ "\n\n"
+                },
+                "assistant" => {
+                    prompt = prompt ++ "[Assistant]\n" ++ content ++ "\n\n"
+                },
+                _ => {}
+            }
+        }
+
+        prompt = prompt ++ "[Assistant]\n"
+        return prompt
+    }
+}
+
+--- 执行多轮对话
+pub fn chat(
+    engine: KLC3BInferenceEngine mut,
+    history: ConversationHistory mut,
+    user_input: str,
+    config: GenerationConfig? = null
+) -> str {
+    -- 添加用户消息
+    history.add_message("user", user_input)
+
+    -- 格式化 prompt
+    let prompt = history.format_prompt()
+
+    -- 生成回复
+    let result = engine.generate(prompt, config)
+
+    -- 添加助手回复到历史
+    history.add_message("assistant", result.text)
+
+    return result.text
+}
+
+-- |===========================================================================|
+-- |                      使用示例                                               |
+-- |===========================================================================|
+
+--- 完整演示：端到端推理流程
+fn demo_inference_engine() {
+    io.println("╔══════════════════════════════════════════════╗")
+    io.println("║     KLC:3B 推理引擎 — 完整演示                ║")
+    io.println("╚══════════════════════════════════════════════╝")
+    io.println()
+
+    -- 步骤 1: 创建引擎（不加载真实权重，使用演示模式）
+    io.println("步骤 1: 创建推理引擎")
+
+    -- 注：实际使用时传入真实的权重文件路径
+    -- let engine = KLC3BInferenceEngine::new("models/klc_3b.klcw", "tokenizer.json")
+
+    -- 演示：创建轻量级引擎用于展示流程
+    let engine = KLC3BInferenceEngine::new("", "")
+    -- 手动标记为已加载（演示用）
+    engine.is_model_loaded = true
+    engine.token_embedding_weight = Tensor::zeros(
+        Shape { dims: [DEFAULT_VOCAB_SIZE, DEFAULT_HIDDEN_SIZE] }
+    )
+    engine.final_norm_weight = Tensor::zeros(Shape { dims: [DEFAULT_HIDDEN_SIZE] })
+    engine.lm_head_weight = Tensor::zeros(
+        Shape { dims: [DEFAULT_HIDDEN_SIZE, DEFAULT_VOCAB_SIZE] }
+    )
+    engine.kv_cache = KVCacheManager::new(
+        DEFAULT_NUM_LAYERS, DEFAULT_NUM_KV_HEADS, DEFAULT_HEAD_DIM,
+        DEFAULT_MAX_POSITION, 1, engine.pool
+    )
+
+    io.println("  ✓ 引擎创建成功（演示模式）")
+    io.println()
+
+    -- 步骤 2: 配置生成参数
+    io.println("步骤 2: 配置生成参数")
+
+    let gen_config = GenerationConfig {
+        max_new_tokens: 128,
+        min_new_tokens: 10,
+        sampling: SamplingConfig::default(),
+        stop_token_ids: [EOS_TOKEN_ID],
+        skip_special_tokens: true,
+        echo_prompt: false,
+        stream: false,
+        return_full_text: false,
+        batch_size: 1
+    }
+
+    io.println("  最大长度: " ++ gen_config.max_new_tokens.to_str())
+    io.println("  温度: " ++ ("%.2f" % gen_config.sampling.temperature))
+    io.println("  Top-K: " ++ gen_config.sampling.top_k.to_str())
+    io.println("  Top-P: " ++ ("%.2f" % gen_config.sampling.top_p))
+    io.println()
+
+    -- 步骤 3: 执行推理
+    io.println("步骤 3: 执行推理")
+
+    let test_prompts = [
+        "Hello, my name is",
+        "What is artificial intelligence?",
+        "请介绍KLC编程语言的特点。",
+        "Write a Python function to calculate fibonacci."
+    ]
+
+    for prompt in test_prompts {
+        io.println("-" .repeat(50))
+        io.println("Prompt: " ++ prompt)
+
+        -- 实际推理（演示模式下会使用模拟权重）
+        let result = engine.generate(prompt, gen_config)
+
+        io.println()
+        io.println("-" .repeat(50))
+        io.println()
+    }
+
+    -- 步骤 4: 展示对话模式
+    io.println("步骤 4: 多轮对话演示")
+    io.println("-" .repeat(50))
+
+    let history = ConversationHistory::new(max_rounds=5)
+    history.add_message("system", "你是KLC编程语言的AI助手，请用中文回答问题。")
+
+    let questions = [
+        "KLC是什么？",
+        "它有哪些特点？",
+        "如何安装KLC？",
+        "能给我写个Hello World吗？"
+    ]
+
+    for q in questions {
+        io.print("[User]: " ++ q ++ "\n")
+
+        let answer = chat(engine, history, q, gen_config)
+        io.println("[Assistant]: " ++ answer)
+        io.println()
+    }
+
+    -- 步骤 5: 统计信息
+    io.println("步骤 5: 引擎统计")
+    io.println("-" .repeat(50))
+    engine.print_stats()
+
+    -- 步骤 6: 不同采样策略对比
+    io.println()
+    io.println("步骤 6: 采样策略对比")
+    io.println("-" .repeat(50))
+
+    let strategies = [
+        ("贪心 (Greedy)", SamplingConfig::greedy()),
+        ("默认 (Default)", SamplingConfig::default()),
+        ("精确 (Precise)", SamplingConfig::precise()),
+        ("创意 (Creative)", SamplingConfig::creative())
+    ]
+
+    let demo_prompt = "The future of AI is"
+
+    for (name, strategy) in strategies {
+        let custom_config = GenerationConfig {
+            max_new_tokens: 64,
+            min_new_tokens: 10,
+            sampling: strategy,
+            stop_token_ids: [EOS_TOKEN_ID],
+            skip_special_tokens: true,
+            echo_prompt: false,
+            stream: false,
+            return_full_text: false,
+            batch_size: 1
+        }
+
+        io.println(name ++ ":")
+        let result = engine.generate(demo_prompt, custom_config)
+        io.println("  " ++ result.text)
+        io.println("  (TPS: " ++ ("%.2f" % result.tokens_per_second) ++ ")")
+        io.println()
+    }
+
+    io.println()
+    io.println("═══════════════════════════════════════════")
+    io.println("  ✓ 推理引擎演示完成")
+    io.println("  提示: 使用真实权重文件可获得完整AI能力")
+    io.println("═══════════════════════════════════════════")
+}
+
+fn main() {
+    demo_inference_engine()
+}

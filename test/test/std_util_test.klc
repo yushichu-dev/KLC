@@ -1,0 +1,32 @@
+-- KLC v1.3.6 工具函数测试
+println("========== 工具函数测试 ==========")
+
+println("-- assert 通过 --")
+assert(true, "true 断言应通过")
+assert(1 == 1, "1==1 断言应通过")
+assert(2 > 1, "2>1 断言应通过")
+assert(3.14 != 0.0, "非零浮点应通过")
+println("assert 通过测试 OK")
+
+println("-- env_get --")
+let path_val = env_get("PATH")
+let path_type = type_of(path_val)
+println("PATH 类型: " + path_type)
+assert(path_type == "String", "env_get('PATH') 应返回字符串")
+let no_var = env_get("__KLC_NONEXIST_VAR_TEST_999__")
+assert(type_of(no_var) == "Null", "不存在的环境变量应返回 Null")
+println("env_get 测试通过")
+
+println("-- type_of 验证 --")
+assert(type_of(42) == "i64", "整数类型")
+assert(type_of(3.14) == "f64", "浮点类型")
+assert(type_of("hello") == "String", "字符串类型")
+assert(type_of(true) == "Bool", "布尔类型")
+assert(type_of(__array()) == "Array", "数组类型")
+println("type_of 验证通过")
+
+println("-- sleep 验证 --")
+sleep(10)
+println("sleep 验证通过 (10ms)")
+
+println("========== 工具函数测试全部通过! ==========")

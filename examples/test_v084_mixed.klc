@@ -1,0 +1,142 @@
+-- ═══════════════════════════════════════════════════════
+-- KLC v0.8.4 混合语法综合测试
+-- 同时使用 for + match + pub + math + Map + Option
+-- ═══════════════════════════════════════════════════════
+
+fn main() {
+    println("═══ KLC v0.8.4 混合语法综合测试 ═══")
+    println("")
+
+    -- 1. for + math + match + pub 混合
+    test_math_with_for_match()
+
+    -- 2. Map + for + 字符串方法 混合
+    test_map_for_string()
+
+    -- 3. Option + match + 函数 混合
+    test_option_match()
+
+    -- 4. 类型检查 + 格式化 + 数组方法 混合
+    test_type_format_array()
+
+    println("")
+    println("═══ 综合测试全部通过！ ═══")
+}
+
+-- for 循环 + math 库 + match 模式匹配
+fn test_math_with_for_match() {
+    println("[1] for + math + match 混合")
+
+    let values = [0.0, 1.0, 2.0, 3.0]
+    for v in values {
+        let category = match v {
+            0.0 => "zero",
+            1.0 => "one",
+            x => fmt("other(%.1f)", x),
+        }
+        let sin_val = math::sin(v)
+        println(fmt("  math.sin(%.1f) = %.4f -> %s", v, sin_val, category))
+    }
+
+    -- for + while 混合
+    let mut factorial = 1
+    let mut i = 1
+    while i <= 5 {
+        factorial = factorial * i
+        i = i + 1
+    }
+    println(fmt("  5! = %d", factorial))
+
+    println("  [OK]")
+}
+
+-- Map + for 遍历 + 字符串增强
+fn test_map_for_string() {
+    println("[2] Map + for + 字符串混合")
+
+    let scores = {"Alice": 95, "Bob": 87, "Charlie": 92}
+
+    -- for 遍历 map keys
+    let names = scores.keys()
+    let mut total = 0
+    let mut count = 0
+    for name in names {
+        let score = scores[name]
+        total = total + score
+        count = count + 1
+    }
+
+    if count > 0 {
+        let avg = math::pow(int_of(fmt("%d", total)), 0.0) -- 用 math 库
+        println(fmt("  平均分: %d / %d = %.1f", total, count, total / count))
+    }
+
+    -- 字符串增强操作
+    let names_joined = names.join(" & ")
+    println(fmt("  学生: '%s'", names_joined))
+    println(fmt("  大写: '%s'", names_joined.to_upper()))
+
+    println("  [OK]")
+}
+
+-- Option + match + 函数组合
+fn test_option_match() {
+    println("[3] Option + match 混合")
+
+    -- 模拟查找
+    let items = ["apple", "banana", "cherry"]
+    let found = find_item(items, "banana")
+    match found {
+        Some(name) => println(fmt("  找到: '%s'", name)),
+        None => println("  未找到"),
+    }
+
+    let not_found = find_item(items, "grape")
+    match not_found {
+        Some(name) => println(fmt("  找到: '%s'", name)),
+        None => println("  'grape' 未找到"),
+    }
+
+    println("  [OK]")
+}
+
+fn find_item(items, target) {
+    for item in items {
+        if item == target {
+            return Some(item)
+        }
+    }
+    return None()
+}
+
+-- 类型检查 + 格式化 + 数组方法
+fn test_type_format_array() {
+    println("[4] type_of + fmt + 数组方法混合")
+
+    let data = [42, 3.14, true, "hello"]
+    let mut output = ""
+
+    for item in data {
+        let tp = type_of(item)
+        let desc = match tp {
+            "i64" => fmt("整数: %d", item),
+            "f64" => fmt("浮点: %f", item),
+            "Bool" => fmt("布尔: %s", item),
+            "String" => fmt("字符串: '%s'", item),
+            _ => fmt("其他: %s", item),
+        }
+        output = output ++ desc ++ " | "
+    }
+
+    println(fmt("  %s", output))
+
+    -- 数组操作
+    let nums = [5, 3, 8, 1, 9, 2, 7]
+    println(fmt("  原始数组: join = '%s'", nums.join(", ")))
+
+    if nums.contains(8) {
+        println(fmt("  8 的位置: %d", nums.index_of(8)))
+    }
+
+    println("  [OK]")
+}

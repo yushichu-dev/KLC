@@ -1,0 +1,84 @@
+﻿-- ============================================================================
+-- KLC 标准 IO 库完整测试 (无 semicolons, KLC 原生语法)
+-- 用法: klc test/std_io_test.klc
+-- ============================================================================
+
+println("==============================================")
+println("   KLC 标准 IO 库测试 v1.3.6")
+println("==============================================")
+
+-- 1. 文件写入 + 存在性检查
+let w = file_write("_klc_std_test.txt", "Hello KLC IO!")
+let e = file_exists("_klc_std_test.txt")
+println("--- 文件写入 ---")
+println(e)
+
+-- 2. 文件读取
+let c = file_read("_klc_std_test.txt")
+println("--- 文件读取 ---")
+println(c)
+
+-- 3. 文件追加
+let a = file_append("_klc_std_test.txt", " Appended!")
+let c2 = file_read("_klc_std_test.txt")
+println("--- 文件追加后 ---")
+println(c2)
+
+-- 4. 删除文件
+let d = file_delete("_klc_std_test.txt")
+let f = file_exists("_klc_std_test.txt")
+println("--- 删除后还存在? ---")
+println(f)
+
+-- 5. 读取不存在的文件
+let m = file_read("_does_not_exist_999.txt")
+println("--- 读不存在文件 ---")
+println(m)
+
+-- 6. eprintln (stderr)
+eprintln("--- 标准错误输出测试 ---")
+
+-- 7. fmt_printf
+let msg = fmt_printf("Hello, {}! This is KLC v{}", "World", "1.3.6")
+println("--- fmt_printf ---")
+println(msg)
+
+-- 8. print_table
+let h = ["Function", "Status"]
+let rows = [
+    ["file_write", "PASS"],
+    ["file_read",  "PASS"],
+    ["file_append","PASS"],
+    ["file_delete","PASS"],
+    ["file_exists","PASS"],
+    ["fmt_printf", "PASS"],
+    ["print_table","PASS"]
+]
+println("--- print_table ---")
+print_table(h, rows)
+
+-- 9. print_debug
+println("--- print_debug ---")
+print_debug(42)
+print_debug("KLC String")
+print_debug(true)
+
+-- 10. flush
+print("flush test... ")
+flush()
+println("OK")
+
+-- 11. 旧版 io:: 兼容
+let cw = io::write("_klc_compat.txt", "compat ok")
+if io::exists("_klc_compat.txt") {
+    println("--- io:: 兼容 ---")
+    println("io::write/exists: PASS")
+}
+let cr = io::read("_klc_compat.txt")
+println(cr)
+let cd = io::delete("_klc_compat.txt")
+println("io::delete: PASS")
+
+println("==============================================")
+println("   全部 IO 测试完成!")
+println("==============================================")

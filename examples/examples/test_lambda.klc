@@ -1,0 +1,18 @@
+-- test_lambda.klc — 测试匿名函数 / 闭包
+
+mod main
+use io
+
+fn main() {
+    io.println("=== KLC Lambda Test ===")
+
+    -- 测试 1: 简单匿名函数
+    let double = fn(x: i64) -> i64 = x * 2
+    io.println("double(5) = " ++ double(5).to_str())
+
+    -- 测试 2: 匿名函数赋值给变量调用
+    let add = fn(a: i64, b: i64) -> i64 { return a + b }
+    io.println("add(3,4) = " ++ add(3, 4).to_str())
+
+    io.println("=== Lambda tests passed! ===")
+}

@@ -1,0 +1,49 @@
+-- KLC v1.3.6 数组操作测试
+println("========== 数组操作测试 ==========")
+
+println("-- arr_len --")
+let empty_arr = __array()
+assert(arr_len(empty_arr) == 0, "空数组长度应为 0")
+let arr3 = __array(1, 2, 3)
+assert(arr_len(arr3) == 3, "三元素数组长度应为 3")
+println("arr_len 测试通过")
+
+println("-- arr_push --")
+let a = __array(1, 2)
+arr_push(a, 3)
+let pushed_len = arr_len(a)
+assert(pushed_len == 3, "arr_push 后长度应为 3")
+let idx2 = a[2]
+assert(idx2 == 3, "第三个元素应为3")
+println("arr_push 测试通过")
+
+println("-- arr_pop --")
+let b = __array(10, 20, 30)
+let popped = arr_pop(b)
+assert(popped == 30, "arr_pop 应返回30")
+assert(arr_len(b) == 2, "arr_pop 后长度应为2")
+println("arr_pop 测试通过")
+
+println("-- arr_slice --")
+let c = __array(100, 200, 300, 400, 500)
+let sliced = arr_slice(c, 1, 4)
+assert(arr_len(sliced) == 3, "slice(1,4) 长度应为3")
+let s0 = sliced[0]
+let s1 = sliced[1]
+let s2 = sliced[2]
+assert(s0 == 200, "sliced[0] 应为200")
+assert(s1 == 300, "sliced[1] 应为300")
+assert(s2 == 400, "sliced[2] 应为400")
+assert(arr_len(c) == 5, "原数组不应被修改")
+println("arr_slice 测试通过")
+
+println("-- 兼容性测试 --")
+let d = __array(1)
+d.push(2)
+assert(arr_len(d) == 2, ".push() 方法仍可用")
+let pop_val = d.pop()
+assert(pop_val == 2, ".pop() 方法仍可用")
+assert(arr_len(d) == 1, ".pop() 后长度正确")
+println("兼容性测试通过")
+
+println("========== 数组操作测试全部通过! ==========")

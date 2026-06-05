@@ -1,0 +1,20 @@
+-- 测试方法调用
+mod t2
+
+type Point {
+    x: f64
+    y: f64
+}
+
+impl Point {
+    fn get_x(self) -> f64 = self.x
+    fn show(self) { io.println("point: " ++ self.x.to_str() ++ "," ++ self.y.to_str()) }
+}
+
+fn main() {
+    let p = Point { x: 10.0, y: 20.0 }
+    p.show()
+    io.println("x=" ++ p.get_x().to_str())
+    io.println("OK")
+    exit(0)
+}

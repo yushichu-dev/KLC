@@ -1,0 +1,168 @@
+-- ============================================================================
+-- token.klc — KLC 词法分析器 Token 类型定义
+-- 自举用：用 KLC 语言本身定义词法单元枚举和 Token 结构体
+-- ============================================================================
+
+-- ─── Token 类型枚举 ───
+-- 涵盖 KLC 语言所有词法单元：字面量、关键字、运算符、分隔符、特殊Token
+enum TokenType {
+    -- 基础字面量
+    Ident(String),          -- 标识符: 变量名、函数名等
+    Integer(i64),           -- 整数字面量
+    Float(f64),             -- 浮点数字面量
+    Str(String),            -- 字符串字面量 (不能用 String，避免与类型名冲突)
+    CharT(char),            -- 字符字面量 (不能用 Char)
+
+    -- 关键字（统一变体，值存储关键字文本）
+    -- 如 Keyword("let"), Keyword("fn"), Keyword("if") 等
+    Keyword(String),
+
+    -- 算术运算符
+    Plus,                   -- +
+    Minus,                  -- -
+    Star,                   -- *
+    Slash,                  -- /
+    Percent,                -- %
+
+    -- 比较运算符
+    Eq,                     -- ==
+    Neq,                    -- !=
+    Lt,                     -- <
+    Gt,                     -- >
+    Lte,                    -- <=
+    Gte,                    -- >=
+
+    -- 赋值运算符
+    Assign,                 -- =
+    PlusEq,                 -- +=
+    MinusEq,                -- -=
+    StarEq,                 -- *=
+    SlashEq,                -- /=
+
+    -- 箭头
+    Arrow,                  -- ->
+    FatArrow,               -- =>
+
+    -- 分隔符
+    Colon,                  -- :
+    Colon2,                 -- ::
+    Dot,                    -- .
+    DotDot,                 -- ..
+    DotDotEq,               -- ..=
+    Comma,                  -- ,
+
+    -- 括号
+    LParen,                 -- (
+    RParen,                 -- )
+    LBrace,                 -- {
+    RBrace,                 -- }
+    LBracket,               -- [
+    RBracket,               -- ]
+
+    -- 其他运算符
+    Concat,                 -- ++ (字符串连接)
+    Pipe,                   -- |> (管道)
+    Bar,                    -- |  (OR 模式)
+    Ampersand,              -- &  (借用)
+    Question,               -- ?  (try 运算符)
+    Question2,              -- ?? (空合并)
+
+    -- 特殊
+    Eof,                    -- 文件结束
+    Unknown,                -- 未知字符
+}
+
+-- ─── Token 结构体 ───
+-- 包含词法单元类型、源码位置、原始文本
+type Token {
+    kind: TokenType,        -- Token 类型
+    line: i64,              -- 所在行号 (从1开始)
+    col: i64,               -- 所在列号 (从1开始)
+    lexeme: String,         -- 原始词素文本
+}
+
+-- ============================================================================
+-- Token 辅助函数
+-- ============================================================================
+
+-- 创建新 Token 的工厂函数
+fn make_token(kind: TokenType, line: i64, col: i64, lexeme: String) -> Token {
+    return Token { kind: kind, line: line, col: col, lexeme: lexeme }
+}
+
+-- 将 TokenType 转换为可读字符串（用于调试输出）
+fn token_type_name(kind: TokenType) -> String {
+    return match kind {
+        TokenType::Ident(_) => "Ident"
+        TokenType::Integer(_) => "Integer"
+        TokenType::Float(_) => "Float"
+        TokenType::Str(_) => "Str"
+        TokenType::CharT(_) => "CharT"
+        TokenType::Keyword(kw) => "Keyword(" ++ kw ++ ")"
+        TokenType::Plus => "Plus"
+        TokenType::Minus => "Minus"
+        TokenType::Star => "Star"
+        TokenType::Slash => "Slash"
+        TokenType::Percent => "Percent"
+        TokenType::Eq => "Eq"
+        TokenType::Neq => "Neq"
+        TokenType::Lt => "Lt"
+        TokenType::Gt => "Gt"
+        TokenType::Lte => "Lte"
+        TokenType::Gte => "Gte"
+        TokenType::Assign => "Assign"
+        TokenType::PlusEq => "PlusEq"
+        TokenType::MinusEq => "MinusEq"
+        TokenType::StarEq => "StarEq"
+        TokenType::SlashEq => "SlashEq"
+        TokenType::Arrow => "Arrow"
+        TokenType::FatArrow => "FatArrow"
+        TokenType::Colon => "Colon"
+        TokenType::Colon2 => "Colon2"
+        TokenType::Dot => "Dot"
+        TokenType::DotDot => "DotDot"
+        TokenType::DotDotEq => "DotDotEq"
+        TokenType::Comma => "Comma"
+        TokenType::LParen => "LParen"
+        TokenType::RParen => "RParen"
+        TokenType::LBrace => "LBrace"
+        TokenType::RBrace => "RBrace"
+        TokenType::LBracket => "LBracket"
+        TokenType::RBracket => "RBracket"
+        TokenType::Concat => "Concat"
+        TokenType::Pipe => "Pipe"
+        TokenType::Bar => "Bar"
+        TokenType::Ampersand => "Ampersand"
+        TokenType::Question => "Question"
+        TokenType::Question2 => "Question2"
+        TokenType::Eof => "Eof"
+        TokenType::Unknown => "Unknown"
+        _ => "?"
+    }
+}
+
+-- 从 TokenType 提取数据值字符串（用于调试输出）
+fn token_type_value(kind: TokenType) -> String {
+    return match kind {
+        TokenType::Ident(s) => s
+        TokenType::Integer(n) => n.to_str()
+        TokenType::Float(f) => f.to_str()
+        TokenType::Str(s) => s
+        TokenType::CharT(c) => c.to_str()
+        TokenType::Keyword(kw) => kw
+        _ => ""
+    }
+}
+
+-- 将 Token 格式化为可读字符串
+-- 格式: [类型] '词素' @ 行:列
+fn token_to_string(t: Token) -> String {
+    let type_str = token_type_name(t.kind)
+    let val_str = token_type_value(t.kind)
+    let result = "[" ++ type_str
+    if val_str != "" {
+        result = result ++ "(" ++ val_str ++ ")"
+    }
+    result = result ++ "] '" ++ t.lexeme ++ "' @ " ++ t.line.to_str() ++ ":" ++ t.col.to_str()
+    return result
+}

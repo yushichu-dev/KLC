@@ -1,0 +1,666 @@
+﻿-- ═══════════════════════════════════════════════════════════════════
+-- KLC v1.0.3-正式版 阶段6: Transformer v2 — 修复版
+-- 修复: 窗口5→8 | 清洗语料 | LR降低 | 未登录词兜底
+-- ═══════════════════════════════════════════════════════════════════
+
+-- ══════════════════════════════════════════════════════════════════
+-- Tokenizer
+-- ══════════════════════════════════════════════════════════════════
+
+fn str_find_char(s: str, ch: str) -> i64 {
+    let mut i = 0
+    let len = s.str_len()
+    while i < len {
+        let c = char_at(s, i)
+        if str_of(c) == ch { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn build_vocab(corpus: str) -> str {
+    let mut vocab = ""
+    let mut i = 0
+    let len = corpus.str_len()
+    while i < len {
+        let c = char_at(corpus, i)
+        let cs = str_of(c)
+        if str_find_char(vocab, cs) == -1 {
+            if vocab == "" { vocab = cs }
+            else { vocab = vocab ++ cs }
+        }
+        i = i + 1
+    }
+    -- 确保包含常见标点和空格
+    let extra = "?？!！.,，;；:： "
+    let mut ei = 0
+    while ei < extra.str_len() {
+        let ec = str_of(char_at(extra, ei))
+        if str_find_char(vocab, ec) == -1 {
+            vocab = vocab ++ ec
+        }
+        ei = ei + 1
+    }
+    return vocab
+}
+
+fn char_to_idx(c: str, vocab: str) -> i64 {
+    let idx = str_find_char(vocab, c)
+    if idx >= 0 { return idx }
+    return 0  -- 未登录词→索引0(兜底)
+}
+
+fn idx_to_char(idx: i64, vocab: str) -> str {
+    if idx < 0 or idx >= vocab.str_len() { return "?" }
+    return char_at(vocab, idx)
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 编码 (增加窗口)
+-- ══════════════════════════════════════════════════════════════════
+
+fn encode_window(corpus: str, start: i64, seq_len: i64, vocab: str, vocab_size: i64) -> mat {
+    let mut m = mat::create(seq_len, vocab_size)
+    let mut p = 0
+    while p < seq_len {
+        let c = char_at(corpus, start + p)
+        let cs = str_of(c)
+        let idx = char_to_idx(cs, vocab)
+        m = mat::set(m, p, idx, 1.0)
+        p = p + 1
+    }
+    return m
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 采样 (修复三档温度无差异问题)
+-- ══════════════════════════════════════════════════════════════════
+
+fn sample_from_logits(logits: mat, row: i64, vocab_size: i64, temp: f64, step: i64) -> i64 {
+    -- 低温直接用 argmax (确信)
+    if temp < 0.4 {
+        let mut max_v = -999.0
+        let mut max_i = 0
+        let mut j = 0
+        while j < vocab_size {
+            let v = mat::get(logits, row, j)
+            if v > max_v {
+                max_v = v
+                max_i = j
+            }
+            j = j + 1
+        }
+        return max_i
+    }
+
+    -- 中高温: softmax + 采样
+    let mut max_logit = -999.0
+    let mut j = 0
+    while j < vocab_size {
+        let v = mat::get(logits, row, j)
+        if v > max_logit { max_logit = v }
+        j = j + 1
+    }
+
+    let mut sum_exp = 0.0
+    let mut probs = mat::create(1, vocab_size)
+    j = 0
+    while j < vocab_size {
+        let v = mat::get(logits, row, j)
+        let scaled = (v - max_logit) / temp
+        if scaled > 85.0 { sum_exp = sum_exp + math::exp(85.0) }
+        else {
+            if scaled < -85.0 { sum_exp = sum_exp + math::exp(-85.0) }
+            else { sum_exp = sum_exp + math::exp(scaled) }
+        }
+        j = j + 1
+    }
+    -- 重新计算+归一化
+    j = 0
+    while j < vocab_size {
+        let v = mat::get(logits, row, j)
+        let scaled = (v - max_logit) / temp
+        let e = if scaled > 85.0 { math::exp(85.0) }
+            else { if scaled < -85.0 { math::exp(-85.0) }
+            else { math::exp(scaled) } }
+        probs = mat::set(probs, 0, j, e / sum_exp)
+        j = j + 1
+    }
+
+    -- 四重哈希随机采样
+    let ts = temp * 1000.0
+    let mut max_p = 0.0
+    let mut max_idx = 0
+    j = 0
+    while j < vocab_size {
+        let p = mat::get(probs, 0, j)
+        if p > max_p {
+            max_p = p
+            max_idx = j
+        }
+        j = j + 1
+    }
+
+    let r1 = math::sin(step as f64 * 45.23 + ts * 7.7 + max_p * 127.1 + max_idx as f64 * 311.7) * 43758.5453
+    let r2 = math::sin(step as f64 * 93.41 + ts * 13.3 + max_logit * 269.5) * 23421.631
+    let r3 = math::sin(step as f64 * 157.89 + ts * 3.9 + max_idx as f64 * 53.7) * 12345.6789
+    let r4 = math::cos(step as f64 * 71.13 + ts * 19.1 + max_p * 43.2 + max_logit * 19.8) * 98765.4321
+    let f1 = r1 - math::floor(r1)
+    let f2 = r2 - math::floor(r2)
+    let f3 = r3 - math::floor(r3)
+    let f4 = r4 - math::floor(r4)
+    let mut frac = f1 * 0.35 + f2 * 0.25 + f3 * 0.2 + f4 * 0.2
+    if frac >= 1.0 { frac = 0.99 }
+    if frac < 0.0 { frac = 0.01 }
+
+    -- 按概率分布采样
+    if temp > 1.2 {
+        -- 高温: 额外加top-k过滤，只选概率最高的一半
+        let k = vocab_size / 2
+        let mut removed = 0
+        while removed < k {
+            let mut min_p = 999.0
+            let mut min_j = 0
+            let mut jj = 0
+            while jj < vocab_size {
+                let p = mat::get(probs, 0, jj)
+                if p > 0.0 and p < min_p {
+                    min_p = p
+                    min_j = jj
+                }
+                jj = jj + 1
+            }
+            probs = mat::set(probs, 0, min_j, 0.0)
+            removed = removed + 1
+        }
+        -- 重归一化
+        let mut total = 0.0
+        j = 0
+        while j < vocab_size {
+            total = total + mat::get(probs, 0, j)
+            j = j + 1
+        }
+        j = 0
+        while j < vocab_size {
+            let p = mat::get(probs, 0, j)
+            if total > 0.0 {
+                probs = mat::set(probs, 0, j, p / total)
+            }
+            j = j + 1
+        }
+    }
+
+    let mut cumul = 0.0
+    j = 0
+    while j < vocab_size {
+        cumul = cumul + mat::get(probs, 0, j)
+        if frac < cumul { return j }
+        j = j + 1
+    }
+    return max_idx
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 自回归生成 (窗口8, 重复惩罚, 多样性)
+-- ══════════════════════════════════════════════════════════════════
+
+fn transformer_generate(
+    model, seed: str, vocab: str,
+    seq_len: i64, vocab_size: i64,
+    gen_len: i64, temp: f64, turn: i64
+) -> str {
+    let mut context = seed
+    -- 用空格填充到seq_len
+    if context.str_len() < seq_len {
+        let need = seq_len - context.str_len()
+        let mut k = 0
+        while k < need {
+            context = " " ++ context
+            k = k + 1
+        }
+    }
+
+    let mut result = ""
+    let mut step = 0
+
+    while step < gen_len {
+        let rlen = context.str_len()
+        let wstart = rlen - seq_len
+
+        -- 编码窗口
+        let mut win_x = mat::create(seq_len, vocab_size)
+        let mut p = 0
+        while p < seq_len {
+            let c = char_at(context, wstart + p)
+            let cs = str_of(c)
+            let idx = char_to_idx(cs, vocab)
+            win_x = mat::set(win_x, p, idx, 1.0)
+            p = p + 1
+        }
+
+        let logits = transformer::forward(model, win_x)
+
+        -- 重复惩罚: 降低最近5个字符的logits
+        if step >= 1 {
+            let rl = result.str_len()
+            let ps = rl - 5
+            if ps < 0 { ps = 0 }
+            let mut pp = ps
+            while pp < rl {
+                let prev_c = str_of(char_at(result, pp))
+                let prev_idx = char_to_idx(prev_c, vocab)
+                if prev_idx > 0 and prev_idx < vocab_size {
+                    let old_v = mat::get(logits, seq_len - 1, prev_idx)
+                    logits = mat::set(logits, seq_len - 1, prev_idx, old_v / 1.5)
+                }
+                pp = pp + 1
+            }
+        }
+
+        -- 高温额外随机性
+        let next_idx = sample_from_logits(logits, seq_len - 1, vocab_size, temp, step + turn * 100)
+        let ch = idx_to_char(next_idx, vocab)
+        context = context ++ ch
+        result = result ++ ch
+        step = step + 1
+    }
+
+    return seed ++ result
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 清洗版语料 v2: 每句1遍, 零碎片字符, 零过度重复
+-- ══════════════════════════════════════════════════════════════════
+
+fn build_corpus() -> str {
+    -- 中文问候
+    let c1 = "你好世界今天天气很好"
+    let c2 = "你好朋友很高兴见到你"
+
+    -- 英文问候
+    let c3 = "hello world today is a good day "
+    let c4 = "hello my friend nice to meet you "
+
+    -- 中英混合
+    let c5 = "你好hello世界world"
+
+    -- 完整中文句子
+    let c6 = "我喜欢编程因为编程很有趣"
+    let c7 = "学习使人进步知识就是力量"
+    let c8 = "明天会更好只要坚持努力"
+    let c9 = "今天天气真的很不错哦"
+    let c10 = "加油你是最棒的一定会成功"
+
+    -- 完整英文句子
+    let c11 = "I love programming because it is fun "
+    let c12 = "learning makes you better knowledge is power "
+    let c13 = "tomorrow will be better if you keep trying "
+    let c14 = "you are the best never give up you can do it "
+
+    -- 对话对
+    let c15 = "你好吗我很好谢谢"
+    let c16 = "早上好"
+    let c17 = "晚安"
+    let c18 = "谢谢你不客气"
+    let c19 = "how are you I am fine thank you "
+
+    -- 自然场景
+    let c20 = "春天来了花儿开了小鸟在唱歌"
+    let c21 = "夏天很热我喜欢去游泳"
+    let c22 = "秋天树叶变黄了风吹过很凉爽"
+    let c23 = "冬天下雪了很冷要穿棉袄"
+
+    -- 数字
+    let c24 = "一二三四五六七八九十"
+
+    -- 中英长句混合
+    let c25 = "今天是一个好天气today is a good day"
+    let c26 = "我爱你I love you"
+
+    return c1 ++ c2 ++ c3 ++ c4 ++ c5 ++ c6
+        ++ c7 ++ c8 ++ c9 ++ c10 ++ c11 ++ c12
+        ++ c13 ++ c14 ++ c15 ++ c16 ++ c17 ++ c18
+        ++ c19 ++ c20 ++ c21 ++ c22 ++ c23 ++ c24
+        ++ c25 ++ c26
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 大规模语料 v2: 仅连贯完整句, 每句1遍, 零碎片
+-- ══════════════════════════════════════════════════════════════════
+
+fn build_big_corpus() -> str {
+    -- 基础语料仅复用1遍(避免过拟合)
+    let base = build_corpus()
+
+    -- 中文对话
+    let d1 = "早上好今天天气真好"
+    let d2 = "晚上好早点休息晚安"
+    let d3 = "吃饭了吗吃了你呢我也吃了"
+    let d4 = "今天心情很好阳光明媚"
+    let d5 = "谢谢你的帮助不客气互相帮助"
+
+    -- 中文场景
+    let s1 = "春天的花儿开了小鸟在唱歌"
+    let s2 = "夏天的太阳很大我想去游泳"
+    let s3 = "秋天的树叶黄了天气凉了"
+    let s4 = "冬天很冷要穿厚衣服"
+    let s5 = "月亮很圆星星很亮夜空很美"
+    let s6 = "大海很蓝天空很广阔"
+
+    -- 哲理
+    let p1 = "人生就像一场旅行不在乎目的地而在乎沿途的风景"
+    let p2 = "知识改变命运学习成就未来"
+    let p3 = "千里之行始于足下只要坚持就会成功"
+    let p4 = "三人行必有我师学习永远不嫌晚"
+
+    -- 英文对话
+    let e1 = "good morning how are you today "
+    let e2 = "good night sweet dreams "
+    let e3 = "thank you for your help you are welcome "
+    let e4 = "never give up keep trying you will succeed "
+    let e5 = "I believe in you you can do it "
+    let e6 = "time flies make every day count "
+
+    -- 英文场景
+    let es1 = "the sun is shining the birds are singing "
+    let es2 = "the sky is blue the clouds are white "
+    let es3 = "the moon is bright and the stars are shining "
+
+    -- 编程
+    let tech1 = "hello world print "
+    let tech2 = "if then else while for do function return "
+
+    -- 问答
+    let qa1 = "你好吗我很好谢谢"
+    let qa2 = "今天怎么样还不错"
+    let qa3 = "how are you I am fine "
+
+    -- 混合语言
+    let mx1 = "今天is a good day明天will be better"
+    let mx2 = "I love编程because it is fun因为很有趣"
+
+    -- 数字
+    let n1 = "一二三四五六七八九十"
+
+    -- 长句子 (连贯段落)
+    let long1 = "在一个阳光明媚的早晨我走在公园的小路上看见花儿开了"
+    let long2 = "学习编程是一件非常有趣的事情你可以创造属于自己的世界"
+    let long3 = "只要坚持下去就一定会成功不要放弃自己的梦想加油"
+
+    return base
+        ++ d1 ++ d2 ++ d3 ++ d4 ++ d5
+        ++ s1 ++ s2 ++ s3 ++ s4 ++ s5 ++ s6
+        ++ p1 ++ p2 ++ p3 ++ p4
+        ++ e1 ++ e2 ++ e3 ++ e4 ++ e5 ++ e6
+        ++ es1 ++ es2 ++ es3
+        ++ tech1 ++ tech2
+        ++ qa1 ++ qa2 ++ qa3
+        ++ mx1 ++ mx2
+        ++ n1
+        ++ long1 ++ long2 ++ long3
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 训练函数
+-- ══════════════════════════════════════════════════════════════════
+
+fn run_training(model, vocab: str, corpus: str,
+                vocab_size: i64, seq_len: i64,
+                epochs: i64, init_lr: f64, min_lr: f64,
+                title: str, save_path: str, do_save: i64) {
+    let cl = corpus.str_len()
+
+    println("================================================")
+    println("  " ++ title)
+    println("================================================")
+    println("")
+    println("  语料: " ++ cl.to_str() ++ "字, 窗口:" ++ seq_len.to_str())
+    println("  LR: " ++ init_lr.to_str() ++ " → " ++ min_lr.to_str())
+    println("  轮次: " ++ epochs.to_str())
+    println("")
+    transformer::print(model)
+    println("  ------------------------------------------------")
+
+    let mut epoch = 0
+    let mut best_loss = 999.0
+
+    while epoch < epochs {
+        let factor = (epoch * 1.0) / (epochs * 1.0)
+        let lr = init_lr + (min_lr - init_lr) * factor
+
+        let mut total_loss = 0.0
+        let mut wcount = 0
+        let mut start = 0
+
+        while start + seq_len + 1 <= cl {
+            let x = encode_window(corpus, start, seq_len, vocab, vocab_size)
+            let y = encode_window(corpus, start + 1, seq_len, vocab, vocab_size)
+            let loss = transformer::train_step(model, x, y, lr)
+            total_loss = total_loss + loss
+            wcount = wcount + 1
+            start = start + 1
+        }
+
+        let avg = total_loss / wcount as f64
+        if avg < best_loss { best_loss = avg }
+
+        if epoch % 10 == 0 or epoch < 3 or epoch + 1 >= epochs {
+            let bar = if avg < 1.0 { "▇▇" } else { "  " }
+            println("  " ++ epoch.to_str() ++ "/" ++ epochs.to_str()
+                ++ "  Loss=" ++ avg.to_str()
+                ++ "  LR=" ++ lr.to_str() ++ "  " ++ bar)
+        }
+        epoch = epoch + 1
+    }
+
+    println("")
+    println("  完成! 最佳Loss=" ++ best_loss.to_str())
+
+    if do_save == 1 {
+        transformer::save(model, save_path)
+        println("  已保存到 " ++ save_path)
+    }
+    println("")
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 生成测试
+-- ══════════════════════════════════════════════════════════════════
+
+fn run_gen_test(model, vocab: str, vocab_size: i64, seq_len: i64) {
+    println("  ====== 生成测试 ======")
+    let gen_len = 24
+
+    let seeds = ["你好", "hello", "今天", "加油", "love", "早上好"]
+    let temps = [0.3, 0.9, 1.8]
+    let names = ["确信", "均衡", "创意"]
+    let mut si = 0
+    while si < 6 {
+        let sd = seeds[si]
+        println("")
+        println("  种子: [" ++ sd ++ "]")
+        let mut ti = 0
+        while ti < 3 {
+            let t = temps[ti]
+            let gen = transformer_generate(model, sd, vocab, seq_len, vocab_size, gen_len, t, si * 3 + ti)
+            println("    " ++ names[ti] ++ "(T=" ++ t.to_str() ++ "): " ++ gen)
+            ti = ti + 1
+        }
+        si = si + 1
+    }
+    println("")
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 模式1: 初始训练
+-- ══════════════════════════════════════════════════════════════════
+
+fn do_initial_train(vocab: str, vocab_size: i64) {
+    -- d_model 适中 (速度优先)
+    let mut d_model = vocab_size / 4
+    if d_model < 16 { d_model = 16 }
+    if d_model > 64 { d_model = 64 }
+    let heads = 2
+
+    let seq_len = 8
+    let epochs = 300
+    let init_lr = 1.7     -- 降低学习率, 精细学习
+    let min_lr = 0.05
+
+    println("")
+    println("  创建模型: d_model=" ++ d_model.to_str()
+        ++ " heads=" ++ heads.to_str()
+        ++ " vocab=" ++ vocab_size.to_str()
+        ++ " window=" ++ seq_len.to_str())
+
+    let corpus = build_corpus()
+    let model = transformer::create(d_model, heads, vocab_size)
+    run_training(model, vocab, corpus, vocab_size, seq_len,
+                 epochs, init_lr, min_lr,
+                 "阶段1: 基础预训练 (window=8)",
+                 "transformer_model.klct", 1)
+
+    run_gen_test(model, vocab, vocab_size, seq_len)
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 模式2: 继续训练 (降低LR)
+-- ══════════════════════════════════════════════════════════════════
+
+fn do_continue_train(vocab: str, vocab_size: i64) {
+    let model_path = "transformer_model.klct"
+    if not io::exists(model_path) {
+        println("  错误: 未找到模型, 请先跑模式1")
+        return
+    }
+
+    let model = transformer::load(model_path)
+    println("  已加载 " ++ model_path)
+
+    let seq_len = 8
+    let epochs = 40        -- 少轮次防过拟合
+    let init_lr = 1.7      -- 低学习率精细打磨
+    let min_lr = 0.05
+
+    let big_corpus = build_big_corpus()
+    println("  语料: " ++ big_corpus.str_len().to_str() ++ " 字")
+    println("")
+
+    run_training(model, vocab, big_corpus, vocab_size, seq_len,
+                 epochs, init_lr, min_lr,
+                 "阶段2: 万级语料精调 (window=8, low LR)",
+                 "transformer_model_big.klct", 1)
+
+    run_gen_test(model, vocab, vocab_size, seq_len)
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 模式3: 对话
+-- ══════════════════════════════════════════════════════════════════
+
+fn do_chat(vocab: str, vocab_size: i64) {
+    let model_path = if io::exists("transformer_model_big.klct") {
+        "transformer_model_big.klct"
+    } else {
+        if io::exists("transformer_model.klct") {
+            "transformer_model.klct"
+        } else {
+            ""
+        }
+    }
+
+    if model_path == "" {
+        println("  错误: 未找到模型! 请先跑模式1或2")
+        return
+    }
+
+    let model = transformer::load(model_path)
+    transformer::print(model)
+    println("")
+
+    let seq_len = 8    -- 生成窗口也是8
+    let gen_len = 24
+
+    println("================================================")
+    println("  KLC Transformer 对话 v2")
+    println("  窗口:" ++ seq_len.to_str() ++ " | 输入 quit 退出")
+    println("================================================")
+    println("")
+
+    let mut running = true
+    let mut turn = 0
+    let mut empty_streak = 0
+    while running {
+        print("  你: ")
+        let input = read_line()
+        let trimmed = input.trim()
+        if trimmed == "quit" or trimmed == "exit" {
+            running = false
+        } else {
+            if trimmed == "" {
+                empty_streak = empty_streak + 1
+                if empty_streak >= 3 {
+                    println("  (自动退出)")
+                    running = false
+                } else {
+                    println("  (空输入)")
+                }
+            } else {
+                empty_streak = 0
+                println("")
+                let off1 = turn as f64 * 3.0
+                let off2 = turn as f64 * 3.0 + 1.0
+                let off3 = turn as f64 * 3.0 + 2.0
+                let g1 = transformer_generate(model, trimmed, vocab, seq_len, vocab_size, gen_len, 0.3, off1 as i64)
+                let g2 = transformer_generate(model, trimmed, vocab, seq_len, vocab_size, gen_len, 0.9, off2 as i64)
+                let g3 = transformer_generate(model, trimmed, vocab, seq_len, vocab_size, gen_len, 1.8, off3 as i64)
+                println("  确信: " ++ g1)
+                println("  均衡: " ++ g2)
+                println("  创意: " ++ g3)
+                println("")
+                turn = turn + 1
+            }
+        }
+    }
+    println("  再见!")
+}
+
+-- ══════════════════════════════════════════════════════════════════
+-- 主程序
+-- ══════════════════════════════════════════════════════════════════
+
+fn main() {
+    println("")
+    println("================================================")
+    println("  KLC v1.0.3-正式版 阶段6: Transformer v2 (修复版)")
+    println("  窗口8 | 清洗语料 | 低LR精调 | 未登录词兜底")
+    println("================================================")
+    println("")
+
+    let big_corpus = build_big_corpus()
+    let vocab = build_vocab(big_corpus)
+    let vlen = vocab.str_len()
+
+    println("  词表 (" ++ vlen.to_str() ++ "字)")
+    println("  万级语料: " ++ big_corpus.str_len().to_str() ++ " 字")
+    println("")
+    println("  [1] 初始训练  (window=8, 300轮, ~30秒)")
+    println("  [2] 继续训练  (window=8, 40轮, ~3分钟)")
+    println("  [3] 对话")
+    println("")
+    println("  流程: 1 → 2 → 3")
+    println("")
+    print("  选择 (1/2/3): ")
+    let choice = read_line()
+    let tc = choice.trim()
+
+    if tc == "1" or choice.starts_with("1") {
+        do_initial_train(vocab, vlen)
+    } else {
+        if tc == "2" or choice.starts_with("2") {
+            do_continue_train(vocab, vlen)
+        } else {
+            do_chat(vocab, vlen)
+        }
+    }
+}

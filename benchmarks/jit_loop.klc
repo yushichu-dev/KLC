@@ -1,0 +1,35 @@
+-- ============================================================================
+-- KLC JIT 简单循环测试
+-- 用法:
+--   klc --test-jit benchmarks/jit_loop.klc
+-- ============================================================================
+
+-- 纯计算循环 — 完全 JIT 可编译 (仅 i64 运算 + 控制流)
+fn loop_sum(n: i64) → i64 {
+    let total = 0;
+    let i = 0;
+    while i < n {
+        total = total + i;
+        i = i + 1;
+    }
+    return total;
+}
+
+print("n=1,000,000: loop_sum = ");
+println(loop_sum(1000000));
+
+print("n=10,000,000: loop_sum = ");
+println(loop_sum(10000000));
+
+-- 简单递归 — JIT 函数调用热点
+fn factorial(n: i64) → i64 {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+print("factorial(15) = ");
+println(factorial(15));
+
+println("=== 简单循环 JIT 测试完成 ===");

@@ -1,0 +1,80 @@
+-- ================================================================
+-- KLC v1.3.6 新增功能完整测试 — 数学库
+-- ================================================================
+
+println("========== 数学库测试 ==========")
+
+-- abs
+println("-- abs --")
+let a1 = abs(-42)
+println(a1)
+assert(a1 == 42, "abs(-42) 应为 42")
+let a2 = abs(42)
+assert(a2 == 42, "abs(42) 应为 42")
+let a3 = abs(-3.14)
+assert(a3 >= 3.13 and a3 <= 3.15, "abs(-3.14) 应约为 3.14")
+println("abs 测试通过")
+
+-- sqrt
+println("-- sqrt --")
+let s1 = sqrt(16.0)
+assert(s1 >= 3.99 and s1 <= 4.01, "sqrt(16) 应为 4.0")
+let s2 = sqrt(0.0)
+assert(s2 >= -0.01 and s2 <= 0.01, "sqrt(0) 应为 0.0")
+let s3 = sqrt(-1.0)
+assert(type_of(s3) == "Null", "sqrt(-1) 应返回 Null")
+println("sqrt 测试通过")
+
+-- pow
+println("-- pow --")
+let p1 = pow(2.0, 3.0)
+assert(p1 >= 7.99 and p1 <= 8.01, "pow(2,3) 应为 8.0")
+let p2 = pow(5, 0)
+assert(p2 >= 0.99 and p2 <= 1.01, "pow(5,0) 应为 1.0")
+println("pow 测试通过")
+
+-- round
+println("-- round --")
+assert(round(3.6) == 4.0, "round(3.6) 应为 4.0")
+assert(round(3.4) == 3.0, "round(3.4) 应为 3.0")
+assert(round(3.5) == 4.0, "round(3.5) 应为 4.0")
+assert(round(-3.5) == -4.0, "round(-3.5) 应为 -4.0")
+println("round 测试通过")
+
+-- floor
+println("-- floor --")
+assert(floor(3.9) == 3.0, "floor(3.9) 应为 3.0")
+assert(floor(-3.1) == -4.0, "floor(-3.1) 应为 -4.0")
+println("floor 测试通过")
+
+-- ceil
+println("-- ceil --")
+assert(ceil(3.1) == 4.0, "ceil(3.1) 应为 4.0")
+assert(ceil(-3.9) == -3.0, "ceil(-3.9) 应为 -3.0")
+println("ceil 测试通过")
+
+-- max/min
+println("-- max / min --")
+assert(max(3, 7) == 7.0, "max(3,7) 应为 7.0")
+assert(min(3, 7) == 3.0, "min(3,7) 应为 3.0")
+assert(max(-5, -1) == -1.0, "max(-5,-1) 应为 -1.0")
+assert(min(-5, -1) == -5.0, "min(-5,-1) 应为 -5.0")
+println("max/min 测试通过")
+
+-- 常量
+println("-- 常量 --")
+let pi = math_pi()
+assert(pi >= 3.14 and pi <= 3.142, "math_pi 应在 3.14~3.142 之间")
+let e = math_e()
+assert(e >= 2.71 and e <= 2.719, "math_e 应在 2.71~2.719 之间")
+println("常量测试通过")
+
+-- 兼容性
+println("-- 兼容性 math:: 前缀 --")
+let orig_abs = math::abs(-10)
+assert(orig_abs == 10, "math::abs(-10) 应为 10")
+let orig_sqrt = math::sqrt(25.0)
+assert(orig_sqrt >= 4.99 and orig_sqrt <= 5.01, "math::sqrt(25) 应为 5.0")
+println("兼容性测试通过")
+
+println("========== 数学库测试全部通过! ==========")

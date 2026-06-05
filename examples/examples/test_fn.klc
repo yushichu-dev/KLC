@@ -1,0 +1,21 @@
+-- 最小函数调用测试
+mod main
+use io
+
+fn add(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+fn double(x: i64) -> i64 {
+    return x * 2
+}
+
+fn main() {
+    io.println("add(3,4) = " ++ add(3, 4).to_str())
+    io.println("double(5) = " ++ double(5).to_str())
+
+    -- 测试局部变量
+    let mut x = 10
+    x = x + double(3)
+    io.println("x = " ++ x.to_str())
+}

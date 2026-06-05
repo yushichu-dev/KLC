@@ -1,0 +1,49 @@
+-- branching.klc — KLC MVP: 条件分支快速测试
+
+mod main
+use io
+
+--- 斐波那契（递归）
+fn fib(n: i64) -> i64 {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+--- 安全除法
+fn safe_divide(a: i64, b: i64) -> i64 {
+    if b == 0 {
+        io.println("  (caught: division by zero)")
+        return 0
+    }
+    return a / b
+}
+
+--- 根据分数返回等级
+fn grade(score: i64) -> str {
+    if score >= 90 { return "A" }
+    if score >= 80 { return "B" }
+    if score >= 70 { return "C" }
+    if score >= 60 { return "D" }
+    return "F"
+}
+
+fn main() {
+    io.println("=== KLC MVP Test ===")
+
+    io.println("fib(10)    = " ++ fib(10).to_str())
+    io.println("100 / 5    = " ++ safe_divide(100, 5).to_str())
+    io.println("100 / 0    = " ++ safe_divide(100, 0).to_str())
+    io.println("score 95 -> " ++ grade(95))
+    io.println("score 82 -> " ++ grade(82))
+    io.println("score 60 -> " ++ grade(60))
+    io.println("score 45 -> " ++ grade(45))
+
+    -- 计算 1+2+...+10
+    let mut sum = 0
+    let mut i = 1
+    while i <= 10 {
+        sum = sum + i
+        i = i + 1
+    }
+    io.println("sum 1..10 = " ++ sum.to_str())
+}

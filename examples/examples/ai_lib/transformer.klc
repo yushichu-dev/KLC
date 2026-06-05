@@ -1,0 +1,763 @@
+-- ============================================================================
+-- KLC:AI Transformer 最小内核
+-- 版本: v1.0.0
+-- 适配 KLC:3B 入门小模型，预留 9B/27B 扩展接口
+--
+-- 核心组件：
+--   1. Multi-Head Attention（多头自注意力）
+--   2. Feed-Forward Network（前馈网络）
+--   3. RMSNorm / LayerNorm（归一化层）
+--   4. Rotary Position Embedding（旋转位置编码）
+--   5. 完整 Transformer Block 和模型推理流程
+--
+-- 架构设计参考：
+--   - LLaMA 系列（RMSNorm + SwiGLU FFN + RoPE）
+--   - Mistral（GQA 分组查询注意力）
+--   - Qwen2（与 LLaMA 兼容）
+-- ============================================================================
+
+mod transformer
+
+use tensor
+use activation
+use normalization
+
+-- |===========================================================================|
+-- |                     模型配置（支持多规格）                                 |
+-- |===========================================================================|
+
+--- Transformer 模型完整配置
+---
+--- 设计理念：通过配置对象支持多种模型规格，
+--- 避免硬编码，方便后续扩展到 9B/27B。
+type ModelConfig {
+    -- ═══ 基础架构参数 ═══
+    vocab_size: i64           -- 词表大小（如 LLaMA: 32000, Qwen: 151936）
+    hidden_size: i64          -- 隐藏层维度（模型宽度）
+    num_layers: i64           -- Transformer 层数（深度）
+    num_heads: i64            -- 注意力头数量
+    num_kv_heads: i64         -- KV 头数量（GQA: 通常 ≤ num_heads）
+    head_dim: i64             -- 每个头的维度
+
+    -- ═══ 中间层维度（FFN）═
+    intermediate_size: i64    -- FFN 中间层大小
+
+    -- ═══ 归一化参数 ═══
+    rms_norm_eps: f64         -- RMSNorm epsilon
+
+    -- ═══ 位置编码 ═══
+    max_position_embeddings: i64  -- 最大序列长度
+    rope_theta: f64               -- RoPE 基频（默认 10000.0）
+
+    -- ═══ 量化/精度 ═══
+    dtype: str                  -- 数据类型 ("fp32", "fp16", "bf16")
+
+    -- ═══ 元信息 ═══
+    model_name: str            -- 模型名称
+    parameter_count: i64       -- 预估参数量
+}
+
+impl ModelConfig {
+    --- 获取 KLC:3B 配置（入门小模型）
+    ---
+    --- 参考架构（类似 Qwen2-1.5B / TinyLlama 的放大版）:
+    ---   hidden_size = 2560
+    ---   num_layers = 28
+    ---   num_heads = 32
+    ---   intermediate_size = 6912 (≈ 2.7 * hidden_size)
+    fn klc_3b() -> ModelConfig {
+        return ModelConfig {
+            vocab_size: 64000,
+            hidden_size: 2560,
+            num_layers: 28,
+            num_heads: 32,
+            num_kv_heads: 32,        -- MHA（非 GQA）
+            head_dim: 80,              -- 2560 / 32 = 80
+            intermediate_size: 6912,
+            rms_norm_eps: 1e-6,
+            max_position_embeddings: 4096,
+            rope_theta: 10000.0,
+            dtype: "fp32",
+            model_name: "KLC-3B-v1",
+            parameter_count: 3088000000  -- ≈ 3.09B
+        }
+    }
+
+    --- 获取 KLC:9B 配置（预留扩展）
+    fn klc_9b() -> ModelConfig {
+        return ModelConfig {
+            vocab_size: 128000,
+            hidden_size: 3584,
+            num_layers: 36,
+            num_heads: 56,
+            num_kv_heads: 8,          -- GQA（7:1 分组比）
+            head_dim: 64,              -- 3584 / 56 = 64
+            intermediate_size: 18944,
+            rms_norm_eps: 1e-5,
+            max_position_embeddings: 8192,
+            rope_theta: 1000000.0,     -- 更大基频以支持长文本
+            dtype: "fp16",
+            model_name: "KLC-9B-v1",
+            parameter_count: 9070000000  -- ≈ 9.07B
+        }
+    }
+
+    --- 获取 KLC:27B 配置（预留扩展）
+    fn klc_27b() -> ModelConfig {
+        return ModelConfig {
+            vocab_size: 128000,
+            hidden_size: 5120,
+            num_layers: 48,
+            num_heads: 80,
+            num_kv_heads: 8,          -- 强烈 GQA（10:1 分组比）
+            head_dim: 64,
+            intermediate_size: 27648,
+            rms_norm_eps: 1e-5,
+            max_position_embeddings: 16384,
+            rope_theta: 1000000.0,
+            dtype: "fp16",
+            model_name: "KLC-27B-v1",
+            parameter_count: 27000000000  -- ≈ 27B
+        }
+    }
+
+    --- 自定义配置验证
+    fn validate(self) {
+        assert(self.hidden_size == self.num_heads * self.head_dim,
+               "hidden_size 必须等于 num_heads × head_dim")
+        assert(self.num_kv_heads > 0 and self.num_kv_heads <= self.num_heads,
+               "num_kv_heads 必须在 (0, num_heads] 范围内")
+        assert(self.num_heads % self.num_kv_heads == 0,
+               "num_heads 必须能被 num_kv_heads 整除（GQA 要求）")
+        assert(self.intermediate_size > self.hidden_size,
+               "intermediate_size 应大于 hidden_size")
+    }
+
+    --- 是否使用分组查询注意力（GQA）
+    fn uses_gqa(self) -> bool {
+        return self.num_kv_heads < self.num_heads
+    }
+
+    --- 计算每个 KV 头对应的 Query 头数
+    fn gqa_group_size(self) -> i64 {
+        return self.num_heads / self.num_kv_heads
+    }
+}
+
+-- |===========================================================================|
+-- |                    旋转位置编码 (RoPE)                                     |
+-- |===========================================================================|
+
+--- RoPE（Rotary Position Embedding）计算器
+---
+--- RoPE 通过将查询和键向量旋转来注入位置信息，
+--- 相比绝对位置编码具有更好的外推能力。
+type RopeEmbedding {
+    head_dim: i64
+    max_seq_len: i64
+    base: f64
+    cos_cache: [f64]   -- 余弦缓存（避免重复计算）
+    sin_cache: [f64]   -- 正弦缓存
+}
+
+impl RopeEmbedding {
+    --- 创建 RoPE 编码器
+    fn new(head_dim: i64, max_seq_len: i64, base: f64 = 10000.0) -> RopeEmbedding {
+        let rope = RopeEmbedding {
+            head_dim: head_dim,
+            max_seq_len: max_seq_len,
+            base: base,
+            cos_cache: [],
+            sin_cache: []
+        }
+
+        -- 预计算频率
+        rope.precompute_frequencies()
+
+        return rope
+    }
+
+    --- 预计算频率表
+    fn precompute_frequencies(self mut) {
+        -- 计算频率: θ_i = base^(-2i/d)
+        let half_dim = self.head_dim / 2
+        let freqs = []
+
+        for i in 0..half_dim {
+            let theta = math.pow(self.base, (-2.0 * i as f64 / self.head_dim as f64))
+            freqs.push(theta)
+        }
+
+        -- 为每个位置预计算 cos/sin
+        for pos in 0..self.max_seq_len {
+            for theta in freqs {
+                let angle = pos as f64 * theta
+                self.cos_cache.push(math.cos(angle))
+                self.sin_cache.push(math.sin(angle))
+            }
+        }
+    }
+
+    --- 对单个张量应用 RoPE（原地或返回新张量）
+    fn apply(self, x: Tensor, position: i64) -> Tensor {
+        -- x 形状: [num_heads, seq_len, head_dim]
+        let n = x.size()
+        let result_data = []
+
+        -- 简化版本：假设输入是扁平化的
+        -- 实际应处理多维索引
+        let offset = position * (self.head_dim / 2)
+
+        let mut i = 0
+        while i < n {
+            if (i % self.head_dim) < self.head_dim / 2 {
+                -- 偶数索引
+                let cos_val = self.cos_cache[offset + (i % (self.head_dim / 2))]
+                let sin_val = self.sin_cache[offset + (i % (self.head_dim / 2))]
+
+                let x_even = x.data[i]
+                let x_odd = x.data[i + 1]
+
+                result_data.push(x_even * cos_val - x_odd * sin_val)
+                result_data.push(x_even * sin_val + x_odd * cos_val)
+
+                i = i + 2
+            } else {
+                result_data.push(x.data[i])
+                i = i + 1
+            }
+        }
+
+        return Tensor::from_shape(x.get_shape(), result_data)
+    }
+
+    --- 批量应用 RoPE（优化版，利用缓存）
+    pub fn apply_batch(self, x: Tensor, start_pos: i64) -> Tensor {
+        -- 类似 apply 但处理多个连续位置
+        -- 此处简化为逐个位置调用（生产环境应批量处理）
+        return self.apply(x, start_pos)
+    }
+}
+
+-- |===========================================================================|
+-- |                    多头注意力机制                                          |
+-- |===========================================================================|
+
+--- 注意力层输出类型
+type AttentionOutput {
+    output: Tensor      -- 加权输出
+    attention_weights: [f64]  -- 注意力权重（可选，用于可视化）
+}
+
+--- 多头注意力（Multi-Head Self-Attention）
+---
+--- 支持两种模式：
+--- 1. MHA (Multi-Head Attention): num_heads == num_kv_heads
+--- 2. GQA (Grouped-Query Attention): num_heads > num_kv_heads
+---
+--- 公式：
+---   Attention(Q, K, V) = softmax(QK^T / √d_k) V
+type MultiHeadAttention {
+    config: ModelConfig
+
+    -- 权重张量（实际从文件加载）
+    wq: Tensor       -- Query 投影权重 [hidden_size, num_heads * head_dim]
+    wk: Tensor       -- Key 投影权重 [hidden_size, num_kv_heads * head_dim]
+    wv: Tensor       -- Value 投影权重 [hidden_size, num_kv_heads * head_dim]
+    wo: Tensor       -- 输出投影权重 [num_heads * head_dim, hidden_size]
+
+    -- RoPE 编码器
+    rope: RopeEmbedding
+}
+
+impl MultiHeadAttention {
+    --- 创建注意力层
+    pub fn new(config: ModelConfig) -> MultiHeadAttention {
+        return MultiHeadAttention {
+            config: config,
+            wq: Tensor::zeros(Shape { dims: [
+                config.hidden_size, config.num_heads * config.head_dim
+            ]}),
+            wk: Tensor::zeros(Shape { dims: [
+                config.hidden_size, config.num_kv_heads * config.head_dim
+            ]}),
+            wv: Tensor::zeros(Shape { dims: [
+                config.hidden_size, config.num_kv_heads * config.head_dim
+            ]}),
+            wo: Tensor::zeros(Shape { dims: [
+                config.num_heads * config.head_dim, config.hidden_size
+            ]}),
+            rope: RopeEmbedding::new(config.head_dim, config.max_position_embeddings,
+                                    config.rope_theta)
+        }
+    }
+
+    --- 设置权重（训练后加载）
+    pub fn set_weights(self mut, wq: Tensor, wk: Tensor, wv: Tensor, wo: Tensor) {
+        self.wq = wq
+        self.wk = wk
+        self.wv = wv
+        self.wo = wo
+    }
+
+    --- 前向传播
+    ---
+    --- 输入：
+    ---   x: [batch_size, seq_len, hidden_size]
+    ---
+    --- 输出：
+    ---   [batch_size, seq_len, hidden_size]
+    pub fn forward(
+        self,
+        x: Tensor,
+        kv_cache: KVCacheManager?,
+        layer_idx: i64,
+        batch_idx: i64,
+        start_pos: i64
+    ) -> AttentionOutput {
+        let batch_size = x.shape.dims[0]
+        let seq_len = x.shape.dims[1]
+        let hidden = self.config.hidden_size
+        let heads = self.config.num_heads
+        let kv_heads = self.config.num_kv_heads
+        let d_head = self.config.head_dim
+
+        -- ═══ Step 1: 线性投影 Q, K, V ═══
+        -- Q: [batch, seq, hidden] @ [hidden, heads*head_dim] → [batch, seq, heads*head_dim]
+        let q = x.matmul(self.wq)
+        let k = x.matmul(self.wk)
+        let v = x.matmul(self.wv)
+
+        -- ═══ Step 2: 重塑为多头格式 ═══
+        -- Q: [batch, seq, heads, head_dim]
+        -- K: [batch, seq, kv_heads, head_dim]
+        -- V: [batch, seq, kv_heads, head_dim]
+        let q_reshaped = reshape_to_heads(q, batch_size, seq_len, heads, d_head)
+        let k_reshaped = reshape_to_heads(k, batch_size, seq_len, kv_heads, d_head)
+        let v_reshaped = reshape_to_heads(v, batch_size, seq_len, kv_heads, d_head)
+
+        -- ═══ Step 3: 应用 RoPE 到 Q 和 K ═══
+        let q_rope = self.rope.apply(q_reshaped, start_pos)
+        let k_rope = self.rope.apply(k_reshaped, start_pos)
+
+        -- ═══ Step 4: 更新/拼接 KV Cache ═══
+        let (k_final, v_final) = handle_kv_cache(
+            kv_cache, layer_idx, batch_idx, k_rope, v_rope, seq_len
+        )
+
+        -- ═══ Step 5: 计算注意力分数 ═══
+        -- Q @ K^T / √d_head
+        -- [batch, heads, seq, kv_seq]
+        let scale = 1.0 / math.sqrt(d_head as f64)
+        let attn_scores = scaled_dot_product_attention(
+            q_rope, k_final, v_final, scale
+        )
+
+        -- ═══ Step 6: 输出投影 ═══
+        -- 合并多头 → [batch, seq, heads*head_dim]
+        -- → @ wo → [batch, seq, hidden]
+        let merged = merge_heads(attn_scores.output, batch_size, seq_len, heads, d_head)
+        let output = merged.matmul(self.wo)
+
+        return output
+    }
+}
+
+-- |===========================================================================|
+-- |                    前馈网络 (FFN)                                          |
+-- |===========================================================================|
+
+--- SwiGLU FFN（LLaMA 风格）
+---
+--- 公式：
+---   FFN(x) = down_proj(SiLU(gate_proj(x)) ⊙ up_proj(x)))
+---
+--- 特点：
+--- - 使用门控线性单元（GLU）提升表达能力
+--- - SiLU 作为激活函数（平滑且非单调）
+--- - 三投影矩阵设计（gate, up, down）
+type SwigluFFN {
+    config: ModelConfig
+
+    -- 权重
+    gate_proj: Tensor   -- 门控投影 [hidden, intermediate]
+    up_proj: Tensor     -- 上投影 [hidden, intermediate]
+    down_proj: Tensor   -- 下投影 [intermediate, hidden]
+}
+
+impl SwigluFFN {
+    --- 创建 FFN 层
+    pub fn new(config: ModelConfig) -> SwigluFFN {
+        return SwigluFFN {
+            config: config,
+            gate_proj: Tensor::zeros(Shape { dims: [
+                config.hidden_size, config.intermediate_size
+            ]}),
+            up_proj: Tensor::zeros(Shape { dims: [
+                config.hidden_size, config.intermediate_size
+            ]}),
+            down_proj: Tensor::zeros(Shape { dims: [
+                config.intermediate_size, config.hidden_size
+            ]})
+        }
+    }
+
+    --- 设置权重
+    pub fn set_weights(self mut, gate: Tensor, up: Tensor, down: Tensor) {
+        self.gate_proj = gate
+        self.up_proj = up
+        self.down_proj = down
+    }
+
+    --- 前向传播
+    pub fn forward(self, x: Tensor) -> Tensor {
+        -- gate: [batch, seq, hidden] @ [hidden, inter] → [batch, seq, inter]
+        let gate = x.matmul(self.gate_proj)
+
+        -- up: [batch, seq, hidden] @ [hidden, inter] → [batch, seq, inter]
+        let up = x.matmul(self.up_proj)
+
+        -- SiLU(gate) ⊙ up（逐元素乘法）
+        let activated = silu(gate).mul(up)
+
+        -- down: [batch, seq, inter] @ [inter, hidden] → [batch, seq, hidden]
+        let output = activated.matmul(self.down_proj)
+
+        return output
+    }
+}
+
+-- |===========================================================================|
+-- |                   Transformer Block                                         |
+-- |===========================================================================|
+
+--- 单个 Transformer 层
+---
+--- 结构（Pre-Norm LLaMA 风格）：
+---   x = x + Attention(RMSNorm(x))
+---   x = x + FFN(RMSNorm(x))
+type TransformerBlock {
+    config: ModelConfig
+
+    -- 子层
+    attention: MultiHeadAttention
+    feed_forward: SwigluFFN
+
+    -- 归一化层
+    attn_norm: RMSNorm
+    ffn_norm: RMSNorm
+}
+
+impl TransformerBlock {
+    --- 创建 Transformer Block
+    pub fn new(config: ModelConfig) -> TransformerBlock {
+        return TransformerBlock {
+            config: config,
+            attention: MultiHeadAttention::new(config),
+            feed_forward: SwigluFFN::new(config),
+            attn_norm: RMSNorm::new(config.hidden_size, config.rms_norm_eps),
+            ffn_norm: RMSNorm::new(config.hidden_size, config.rms_norm_eps)
+        }
+    }
+
+    --- 设置所有权重
+    pub fn set_weights(
+        self mut,
+        attn_weights: (Tensor, Tensor, Tensor, Tensor),
+        ffn_weights: (Tensor, Tensor, Tensor),
+        attn_norm_weight: Tensor,
+        ffn_norm_weight: Tensor
+    ) {
+        self.attention.set_weights(attn_weights.0, attn_weights.1,
+                                  attn_weights.2, attn_weights.3)
+        self.feed_forward.set_weights(ffn_weights.0, ffn_weights.1, ffn_weights.2)
+        self.attn_norm.weight = attn_norm_weight
+        self.ffn_norm.weight = ffn_norm_weight
+    }
+
+    --- 前向传播
+    pub fn forward(
+        self,
+        x: Tensor,
+        kv_cache: KVCacheManager?,
+        layer_idx: i64,
+        batch_idx: i64,
+        start_pos: i64
+    ) -> Tensor {
+        -- Pre-Norm: 先归一化再进入子层
+        -- 残差连接: x = x + SubLayer(Norm(x))
+
+        -- ═══ 自注意力子层 ═══
+        let residual = x.clone()
+        let normed_x = self.attn_norm.forward(x)
+        let attn_output = self.attention.forward(
+            normed_x, kv_cache, layer_idx, batch_idx, start_pos
+        )
+        let x = residual.add(attn_output)
+
+        -- ═══ 前馈子层 ═══
+        residual = x.clone()
+        let normed_x = self.ffn_norm.forward(x)
+        let ffn_output = self.feed_forward.forward(normed_x)
+        let x = residual.add(ffn_output)
+
+        return x
+    }
+}
+
+-- |===========================================================================|
+-- |                   完整 Transformer 模型                                    |
+-- |===========================================================================|
+
+--- KLC Transformer 语言模型
+---
+--- 架构：
+---   Token Embeddings
+---   + N × Transformer Blocks (each with Pre-LN RMSNorm)
+---   + Final RMSNorm
+---   + LM Head (Output Projection to Vocabulary)
+type KLCTransformerModel {
+    config: ModelConfig
+
+    -- 嵌入层
+    token_embedding: Tensor  -- [vocab_size, hidden_size]
+
+    -- Transformer 层列表
+    layers: [TransformerBlock]
+
+    -- 最终归一化
+    final_norm: RMSNorm
+
+    -- 输出头（LM Head）
+    lm_head: Tensor  -- [hidden_size, vocab_size]
+
+    -- 内存池
+    pool: MemoryPool
+}
+
+impl KLCTransformerModel {
+    --- 创建模型实例
+    pub fn new(config: ModelConfig, pool: MemoryPool) -> KLCTransformerModel {
+        config.validate()
+
+        -- 初始化各层
+        let layers = []
+        for _ in 0..config.num_layers {
+            layers.push(TransformerBlock::new(config))
+        }
+
+        return KLCTransformerModel {
+            config: config,
+            token_embedding: Tensor::zeros(Shape {
+                dims: [config.vocab_size, config.hidden_size]
+            }),
+            layers: layers,
+            final_norm: RMSNorm::new(config.hidden_size, config.rms_norm_eps),
+            lm_head: Tensor::zeros(Shape {
+                dims: [config.hidden_size, config.vocab_size]
+            }),
+            pool: pool
+        }
+    }
+
+    --- 从权重文件加载模型
+    pub fn from_weights(file_path: str, pool: MemoryPool) -> KLCTransformerModel {
+        -- 读取配置（实际从权重文件头解析）
+        let config = ModelConfig::klc_3b()
+
+        let model = KLCTransformerModel::new(config, pool)
+
+        -- TODO: 实际加载权重
+        -- loader = WeightLoader::new(file_path, pool)
+        -- model.token_embedding = loader.load("token_embedding.weight")
+        -- for i in 0..config.num_layers:
+        --     model.layers[i].set_weights(...)
+
+        io.println("已加载模型: " ++ config.model_name)
+        io.println("参数量: ~" ++ format_number(config.parameter_count))
+
+        return model
+    }
+
+    --- 推理入口（生成模式）
+    ---
+    --- 输入：
+    ---   input_ids: [seq_len] 或 [batch, seq_len] 的 token ID 列表
+    ---
+    --- 输出：
+    ---   logits: [batch, seq, vocab_size] 的概率分布
+    pub fn generate(self, input_ids: [i64], max_new_tokens: i64 = 256) -> [i64] {
+        let generated = input_ids.clone()
+        let kv_cache = KVCacheManager::new(
+            self.config.num_layers,
+            self.config.num_kv_heads,
+            self.config.head_dim,
+            self.config.max_position_embeddings,
+            1,  -- batch_size=1（单序列生成）
+            self.pool
+        )
+
+        -- 初始化序列
+        kv_cache.init_sequence(0)
+
+        -- 自回归生成循环
+        let mut pos = 0
+        while pos < input_ids.len() + max_new_tokens and
+              kv_cache.can_continue(0) {
+            -- 准备当前输入
+            let current_token = if pos < input_ids.len() {
+                input_ids[pos]
+            } else {
+                -- 使用上一个生成的 token
+                generated[generated.len() - 1]
+            }
+
+            -- 嵌入查找
+            let x = self.embed_token(current_token)
+
+            -- 通过所有 Transformer 层
+            let mut hidden = x
+            for layer_idx in 0..self.config.num_layers {
+                hidden = self.layers[layer_idx].forward(
+                    hidden, &kv_cache, layer_idx, 0, pos
+                )
+            }
+
+            -- 最终归一化 + LM Head
+            hidden = self.final_norm.forward(hidden)
+            let logits = hidden.matmul(self.lm_head)
+
+            -- 采样（贪心解码：取 argmax）
+            let next_token = sample_greedy(logits)
+
+            if pos >= input_ids.len() {
+                generated.push(next_token)
+            }
+
+            pos = pos + 1
+
+            -- 终止条件检测（EOS token）
+            if next_token == EOS_TOKEN_ID {
+                break
+            }
+        }
+
+        return generated
+    }
+
+    --- Token 嵌入查找
+    fn embed_token(self, token_id: i64) -> Tensor {
+        -- 返回嵌入向量的副本
+        let offset = token_id * self.config.hidden_size
+        let data = slice(self.token_embedding.data,
+                        offset, offset + self.config.hidden_size)
+        return Tensor::vector(data)
+    }
+}
+
+-- |===========================================================================|
+-- |                      辅助函数                                              |
+-- |===========================================================================|
+
+--- 重塑为多头格式
+fn reshape_to_heads(
+    x: Tensor,
+    batch: i64,
+    seq: i64,
+    heads: i64,
+    head_dim: i64
+) -> Tensor {
+    -- 输入: [batch, seq, heads * head_dim]
+    -- 输出概念上: [batch, heads, seq, head_dim]
+    -- 实际保持扁平化但逻辑正确
+    return x.reshape(Shape { dims: [batch, heads, seq, head_dim] })
+}
+
+--- 合并多头
+fn merge_heads(
+    x: Tensor,
+    batch: i64,
+    seq: i64,
+    heads: i64,
+    head_dim: i64
+) -> Tensor {
+    -- 输入: [batch, heads, seq, head_dim]
+    -- 输出: [batch, seq, heads * head_dim]
+    return x.reshape(Shape { dims: [batch, seq, heads * head_dim] })
+}
+
+--- 缩放点积注意力
+fn scaled_dot_product_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    scale: f64
+) -> AttentionOutput {
+    -- scores = Q @ K^T * scale
+    let scores = q.matmul(k.transpose()).mul_scalar(scale)
+
+    -- softmax
+    let attn_weights = softmax(scores)
+
+    -- output = weights @ V
+    let output = attn_weights.matmul(v)
+
+    return AttentionOutput {
+        output: output,
+        attention_weights: []  -- 可选保存用于分析
+    }
+}
+
+--- KV 缓存处理
+fn handle_kv_cache(
+    cache: KVCacheManager?,
+    layer: i64,
+    batch: i64,
+    k: Tensor,
+    v: Tensor,
+    seq_len: i64
+) -> (Tensor, Tensor) {
+    if cache != null {
+        cache.update(layer, batch, k, v)
+        return cache.get_kv(layer, batch)
+    }
+    return (k, v)
+}
+
+--- 贪心采样（argmax）
+fn sample_greedy(logits: Tensor) -> i64 {
+    -- 找到最大值的索引
+    let mut max_idx = 0
+    let mut max_val = logits.data[0]
+
+    for i in 1..logits.size() {
+        if logits.data[i] > max_val {
+            max_val = logits.data[i]
+            max_idx = i
+        }
+    }
+
+    return max_idx
+}
+
+--- Top-k 采样（带温度）
+fn sample_top_k(logits: Tensor, temperature: f64 = 1.0, k: i64 = 50) -> i64 {
+    -- 温度缩放
+    let scaled = logits.mul_scalar(1.0 / temperature)
+
+    -- Softmax 获取概率分布
+    let probs = softmax(scaled)
+
+    -- Top-k 过滤
+    -- （此处简化为直接采样）
+
+    -- 多项式采样（需要随机数生成器）
+    -- 简化版：返回 argmax
+    return sample_greedy(probs)
+}
+
+--- EOS Token ID（可配置）
+let EOS_TOKEN_ID = 2  -- 常见值（具体取决于 tokenizer）
+
+--- PAD Token ID
+let PAD_TOKEN_ID = 0

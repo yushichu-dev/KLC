@@ -1,0 +1,2 @@
+MessageBoxA(0, "Hello KLC!", "Native GUI", 0)
+Sleep(2000)

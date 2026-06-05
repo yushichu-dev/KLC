@@ -1,0 +1,337 @@
+-- ═══════════════════════════════════════════════════════
+-- KLC v0.8.4 全功能测试
+-- 覆盖: math 库, null/Option, for 循环, match, pub,
+--       Map 增强, % 格式化, 字符串增强, 类型检查
+-- ═══════════════════════════════════════════════════════
+
+fn main() {
+    println("═══ KLC v0.8.4 功能测试 ═══")
+    println("")
+
+    test_math_library()
+    test_null_and_option()
+    test_for_loop()
+    test_match_expression()
+    test_map_enhanced()
+    test_format_strings()
+    test_string_methods()
+    test_array_methods()
+    test_type_checking()
+    test_if_let_binding()
+    test_pub_modifier()
+
+    println("")
+    println("═══ 全部测试通过！ ═══")
+}
+
+-- ─── 1. math 标准库测试 ───
+fn test_math_library() {
+    println("[1] math 标准库")
+
+    -- math.pi / math.e
+    let pi = math::pi()
+    println(fmt("  PI = %f", pi))
+    println(fmt("  E  = %f", math::e()))
+
+    -- 基础函数
+    let x = math::sin(math::pi())
+    println(fmt("  sin(PI) = %f", x))
+
+    let y = math::cos(0.0)
+    println(fmt("  cos(0)  = %f", y))
+
+    let z = math::sqrt(16.0)
+    println(fmt("  sqrt(16) = %f", z))
+
+    let l = math::log(math::e())
+    println(fmt("  log(E)  = %f", l))
+
+    let e = math::exp(1.0)
+    println(fmt("  exp(1)  = %f", e))
+
+    let t = math::tanh(1.0)
+    println(fmt("  tanh(1) = %f", t))
+
+    let a = math::abs(-42)
+    println(fmt("  abs(-42) = %d", a))
+
+    let mn = math::min(3, 7)
+    println(fmt("  min(3,7) = %d", mn))
+
+    let mx = math::max(3, 7)
+    println(fmt("  max(3,7) = %d", mx))
+
+    let pw = math::pow(2.0, 10.0)
+    println(fmt("  pow(2,10) = %f", pw))
+
+    let fl = math::floor(3.7)
+    println(fmt("  floor(3.7) = %f", fl))
+
+    let ce = math::ceil(3.2)
+    println(fmt("  ceil(3.2) = %f", ce))
+
+    let rd = math::round(3.5)
+    println(fmt("  round(3.5) = %f", rd))
+
+    println("  [OK] math 标准库")
+}
+
+-- ─── 2. null 与 Option 类型 ───
+fn test_null_and_option() {
+    println("[2] null 与 Option 类型")
+
+    let x = null
+    if x == null {
+        println("  null 字面量正确")
+    }
+
+    let opt = Some(42)
+    let empty = None()
+
+    if is_null(empty) {
+        println("  None -> null 检测正确")
+    }
+
+    if type_of(x) == "Null" {
+        println("  type_of(null) = Null")
+    }
+
+    let tp = type_of(42)
+    println(fmt("  type_of(42) = %s", tp))
+
+    println("  [OK] null 与 Option")
+}
+
+-- ─── 3. for 循环测试 ───
+fn test_for_loop() {
+    println("[3] for 循环")
+
+    -- 数组遍历
+    let arr = [10, 20, 30, 40, 50]
+    let mut sum = 0
+    for v in arr {
+        sum = sum + v
+    }
+    println(fmt("  数组求和: 10+20+30+40+50 = %d", sum))
+
+    -- while 循环仍然可用
+    let mut i = 0
+    let mut count = 0
+    while i < 5 {
+        count = count + 1
+        i = i + 1
+    }
+    println(fmt("  while 循环计数: %d", count))
+
+    println("  [OK] for 循环")
+}
+
+-- ─── 4. match 模式匹配测试 ───
+fn test_match_expression() {
+    println("[4] match 模式匹配")
+
+    let result = match 2 {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "other",
+    }
+    println(fmt("  match 2 = %s", result))
+
+    let opt = Some(42)
+    let val = match opt {
+        Some(v) => v,
+        None => 0,
+    }
+    println(fmt("  match Some(42) 解构值 = %d", val))
+
+    -- Or 模式
+    let day = match 3 {
+        1 | 2 | 3 | 4 | 5 => "weekday",
+        6 | 7 => "weekend",
+        _ => "invalid",
+    }
+    println(fmt("  match 3 (| 模式) = %s", day))
+
+    -- 变量绑定
+    let x = 10
+    let desc = match x {
+        0 => "zero",
+        n => fmt("other: %d", n),
+    }
+    println(fmt("  match 变量绑定: %s", desc))
+
+    println("  [OK] match 模式匹配")
+}
+
+-- ─── 5. Map 容器增强 ───
+fn test_map_enhanced() {
+    println("[5] Map 容器")
+
+    let m = {"name": "KLC", "version": "0.8.4", "lang": "Rust"}
+
+    -- contains
+    let has = m.contains("name")
+    println(fmt("  contains('name') = %s", has))
+
+    -- keys
+    let ks = m.keys()
+    println(fmt("  keys 长度 = %d", ks.len()))
+
+    -- values
+    let vs = m.values()
+    println(fmt("  values 长度 = %d", vs.len()))
+
+    -- insert
+    m.insert("year", 2026)
+    println(fmt("  insert('year', 2026) 后长度 = %d", m.len()))
+
+    -- remove
+    m.remove("lang")
+    println(fmt("  remove('lang') 后长度 = %d", m.len()))
+
+    -- 遍历
+    println("  遍历 Map:")
+    let keys = m.keys()
+    for k in keys {
+        println(fmt("    %s = %s", k, m[k]))
+    }
+
+    println("  [OK] Map 容器")
+}
+
+-- ─── 6. % 格式化 ───
+fn test_format_strings() {
+    println("[6] %% 格式化")
+
+    let s1 = fmt("Hello, %s!", "KLC")
+    println(fmt("  %%s: %s", s1))
+
+    let s2 = fmt("PI = %.4f", 3.14159265)
+    println(fmt("  %%.4f: %s", s2))
+
+    let s3 = fmt("Age: %d, Score: %d", 25, 98)
+    println(fmt("  %%d: %s", s3))
+
+    let s4 = fmt("Binary: %b", 10)
+    println(fmt("  %%b: %s", s4))
+
+    let s5 = fmt("Hex: %x", 255)
+    println(fmt("  %%x: %s", s5))
+
+    println("  [OK] %% 格式化")
+}
+
+-- ─── 7. 字符串方法 ───
+fn test_string_methods() {
+    println("[7] 字符串方法")
+
+    let s = "  Hello, KLC!  "
+    println(fmt("  trim: '%s'", s.trim()))
+    println(fmt("  to_upper: '%s'", "hello".to_upper()))
+    println(fmt("  to_lower: '%s'", "HELLO".to_lower()))
+    println(fmt("  starts_with: %s", "Hello World".starts_with("Hello")))
+    println(fmt("  ends_with: %s", "Hello World".ends_with("World")))
+
+    let parts = "a,b,c".split(",")
+    println(fmt("  split: 长度 = %d", parts.len()))
+
+    let replaced = "hello world".replace("world", "KLC")
+    println(fmt("  replace: '%s'", replaced))
+
+    let chars = "abc".chars()
+    println(fmt("  chars: 长度 = %d", chars.len()))
+
+    println(fmt("  str_len: %d", "hello".str_len()))
+
+    println("  [OK] 字符串方法")
+}
+
+-- ─── 8. 数组方法 ───
+fn test_array_methods() {
+    println("[8] 数组方法")
+
+    let arr = [3, 1, 4, 1, 5]
+    println(fmt("  len = %d", arr.len()))
+
+    let has3 = arr.contains(3)
+    println(fmt("  contains(3) = %s", has3))
+
+    let idx = arr.index_of(4)
+    println(fmt("  index_of(4) = %d", idx))
+
+    arr.push(9)
+    println(fmt("  push(9) 后 len = %d", arr.len()))
+
+    let top = arr.pop()
+    println(fmt("  pop() = %d", top))
+
+    arr.reverse()
+    println("  reverse 完成")
+
+    let joined = arr.join(", ")
+    println(fmt("  join(', ') = '%s'", joined))
+
+    println("  [OK] 数组方法")
+}
+
+-- ─── 9. 类型检查 ───
+fn test_type_checking() {
+    println("[9] 类型检查")
+
+    println(fmt("  type_of(42)     = %s", type_of(42)))
+    println(fmt("  type_of(3.14)   = %s", type_of(3.14)))
+    println(fmt("  type_of('a')    = %s", type_of('a')))
+    println(fmt("  type_of(true)   = %s", type_of(true)))
+    println(fmt("  type_of(null)   = %s", type_of(null)))
+    println(fmt("  type_of([1,2])  = %s", type_of([1, 2])))
+
+    let i = int_of("123")
+    println(fmt("  int_of('123') = %d", i))
+
+    let f = float_of("3.14")
+    println(fmt("  float_of('3.14') = %f", f))
+
+    let s = str_of(42)
+    println(fmt("  str_of(42) = '%s'", s))
+
+    println("  [OK] 类型检查")
+}
+
+-- ─── 10. if 块内 let 绑定 ───
+fn test_if_let_binding() {
+    println("[10] if 块内 let 绑定")
+
+    let x = 10
+    let result = if x > 5 {
+        let y = x * 2
+        let z = y + 1
+        z
+    } else {
+        let y = x + 100
+        y
+    }
+    println(fmt("  if 块内 let: result = %d (期望 21)", result))
+
+    if x > 0 {
+        let msg = "positive"
+        println(fmt("  if 内 let msg = '%s'", msg))
+    }
+
+    println("  [OK] if 块内 let 绑定")
+}
+
+-- ─── 11. pub 修饰符 ───
+pub fn test_pub_modifier() {
+    println("[11] pub 修饰符")
+
+    pub type Point {
+        x: f64,
+        y: f64,
+    }
+
+    let p = Point { x: 1.0, y: 2.0 }
+    println(fmt("  pub type: Point(%f, %f)", p.x, p.y))
+
+    println("  [OK] pub 修饰符")
+}

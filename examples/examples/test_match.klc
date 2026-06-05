@@ -1,0 +1,58 @@
+-- test_match.klc — 测试 match 表达式
+
+mod main
+use io
+
+fn main() {
+    io.println("=== KLC Match Test ===")
+
+    -- 测试 1: 基础 match
+    let x = 2
+    let result1 = match x {
+        1 => "one"
+        2 => "two"
+        3 => "three"
+        n => "other: " ++ n.to_str()
+    }
+    io.println("match 2 = " ++ result1)
+
+    -- 测试 2: OR 模式
+    let y = 3
+    let result2 = match y {
+        1 | 2 => "one or two"
+        3 | 4 | 5 => "three to five"
+        _ => "many"
+    }
+    io.println("match 3 = " ++ result2)
+
+    -- 测试 3: 带 guard 的 match
+    let score = 82
+    let grade = match score {
+        s if s >= 90 => "A"
+        s if s >= 80 => "B"
+        s if s >= 70 => "C"
+        s if s >= 60 => "D"
+        _ => "F"
+    }
+    io.println("score 82 -> " ++ grade)
+
+    -- 测试 4: 字符串 match
+    let cmd = "start"
+    let desc = match cmd {
+        "start" => "starting..."
+        "stop" => "stopping..."
+        "pause" => "pausing..."
+        _ => "unknown command"
+    }
+    io.println("cmd 'start' -> " ++ desc)
+
+    -- 测试 5: match 作为表达式（嵌套在拼接中）
+    let num = 1
+    io.println("num 1 is " ++ match num {
+        0 => "zero"
+        1 => "one"
+        _ => "many"
+    })
+
+    io.println("=== All match tests passed! ===")
+}

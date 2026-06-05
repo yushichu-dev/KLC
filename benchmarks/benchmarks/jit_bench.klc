@@ -1,0 +1,56 @@
+-- ============================================================================
+-- KLC JIT 性能基准测试
+-- 文件: benchmarks/jit_bench.klc
+-- 用法:
+--   klc benchmarks/jit_bench.klc          → 纯解释执行
+--   klc --jit benchmarks/jit_bench.klc    → JIT 即时编译执行
+--   klc --test-jit benchmarks/jit_bench.klc → 性能对比测试
+-- ============================================================================
+
+-- ─── 测试 1: 斐波那契数列 (递归, 测试函数调用热点) ───
+fn fib(n: i64) → i64 {
+    if n <= 1 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+print("fib(35) = ");
+println(fib(35));
+
+-- ─── 测试 2: 密集计算循环 (测试循环热点 JIT) ───
+let sum = 0;
+let i = 0;
+while i < 1000000 {
+    sum = sum + i;
+    i = i + 1;
+}
+print("sum(0..1000000) = ");
+println(sum);
+
+-- ─── 测试 3: 嵌套循环 + 算术运算 ───
+let result = 0;
+let x = 0;
+while x < 1000 {
+    let y = 0;
+    while y < 1000 {
+        result = result + x * y % 7;
+        y = y + 1;
+    }
+    x = x + 1;
+}
+print("nested loop result = ");
+println(result);
+
+-- ─── 测试 4: 简单算术函数 (验证 JIT 安全字节码) ───
+fn compute(a: i64, b: i64, c: i64) → i64 {
+    let x = a + b;
+    let y = x * c;
+    let z = y / 2;
+    return z - a;
+}
+
+print("compute(10, 20, 5) = ");
+println(compute(10, 20, 5));
+
+println("=== JIT 基准测试完成 ===");
