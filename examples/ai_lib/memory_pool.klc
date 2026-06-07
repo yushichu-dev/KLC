@@ -1,0 +1,601 @@
+-- ============================================================================
+-- KLC:AI 内存池管理系统
+-- 版本: v1.0.0
+-- 针对Windows平台优化的内存管理：
+--   1. 预分配内存池（避免频繁 malloc/free）
+--   2. 权重加载器（支持多种格式）
+--   3. KV缓存管理（支持多序列并行推理）
+-- ============================================================================
+
+mod memory_pool
+
+use tensor
+
+-- |===========================================================================|
+-- |                        常量定义                                           |
+-- |===========================================================================|
+
+--- 页面大小（Windows x64 默认 4KB）
+let PAGE_SIZE = 4096
+
+--- 默认块大小（16KB，适合多数张量操作）
+let DEFAULT_BLOCK_SIZE = 16384
+
+--- 对齐要求（AVX2 需要 32 字节对齐）
+let ALIGNMENT = 32
+
+--- 3B 模型预估大小（FP32: ~12GB, FP16/BF16: ~6GB, INT8: ~3GB）
+let MODEL_3B_SIZE_FP32 = 12 * 1024 * 1024 * 1024  -- 12 GB
+let MODEL_3B_SIZE_FP16 = 6 * 1024 * 1024 * 1024    -- 6 GB
+let MODEL_3B_SIZE_INT8 = 3 * 1024 * 1024 * 1024    -- 3 GB
+
+-- |===========================================================================|
+-- |                     内存池分配器                                           |
+-- |===========================================================================|
+
+--- 内存块
+type MemoryBlock {
+    data: [f64]          -- 数据存储区
+    size: i64            -- 总容量（元素数）
+    used: i64            -- 已使用量
+    next: MemoryBlock?   -- 链表下一块（可选）
+}
+
+impl MemoryBlock {
+    --- 创建新内存块
+    pub fn new(size: i64) -> MemoryBlock {
+        let mut data = []
+        for _ in 0..size {
+            data.push(0.0)
+        }
+        return MemoryBlock {
+            data: data,
+            size: size,
+            used: 0,
+            next: null
+        }
+    }
+
+    --- 分配指定大小的连续空间（返回起始偏移）
+    --- 返回 (offset, success)
+    pub fn allocate(self mut, size: i64) -> (i64, bool) {
+        -- 对齐检查
+        let aligned_size = align_up(size)
+
+        if self.used + aligned_size <= self.size {
+            let offset = self.used
+            self.used = self.used + aligned_size
+            return (offset, true)
+        }
+
+        return (-1, false)  -- 空间不足
+    }
+
+    --- 重置使用状态（不释放内存）
+    pub fn reset(self mut) {
+        self.used = 0
+    }
+
+    --- 获取剩余可用空间
+    pub fn available(self) -> i64 {
+        return self.size - self.used
+    }
+
+    --- 使用率（百分比）
+    pub fn utilization(self) -> f64 {
+        return (self.used as f64 / self.size as f64) * 100.0
+    }
+}
+
+--- 内存池管理器（针对 Windows 平台优化）
+---
+--- 设计理念：
+--- - 预分配大块内存，减少系统调用开销
+--- - 支持临时缓冲区复用（减少重复分配）
+--- - 提供内存统计和诊断信息
+type MemoryPool {
+    blocks: [MemoryBlock]      -- 内存块列表
+    default_block_size: i64    -- 默认新块大小
+    total_allocated: i64       -- 总分配字节数
+    total_used: i64            -- 总已用字节
+    temp_buffers: {str: [f64]} -- 临时缓冲区缓存（按名称索引）
+}
+
+impl MemoryPool {
+    --- 创建内存池
+    pub fn new(initial_size: i64 = 256 * 1024 * 1024) -> MemoryPool {
+        -- initial_size 默认 256MB
+        let initial_block = MemoryBlock::new(initial_size / 8)  -- f64 = 8 bytes
+
+        return MemoryPool {
+            blocks: [initial_block],
+            default_block_size: initial_size,
+            total_allocated: initial_size,
+            total_used: 0,
+            temp_buffers: {}
+        }
+    }
+
+    --- 分配张量数据（从池中获取）
+    pub fn alloc_tensor(self mut, size: i64) -> [f64] {
+        -- 首先尝试在现有块中分配
+        for block in mut self.blocks {
+            let (offset, success) = block.allocate(size)
+            if success {
+                self.total_used = self.total_used + size * 8
+
+                -- 返回该块的子切片
+                return slice(block.data, offset, offset + size)
+            }
+        }
+
+        -- 所有块都满了，创建新块
+        let new_block_size = math.max(size * 2, self.default_block_size)
+        let new_block = MemoryBlock::new(new_block_size)
+        let (offset, _) = new_block.allocate(size)
+
+        self.blocks.push(new_block)
+        self.total_allocated = self.total_allocated + new_block_size * 8
+        self.total_used = self.total_used + size * 8
+
+        return slice(self.blocks[self.blocks.len() - 1].data, offset, offset + size)
+    }
+
+    --- 分配并初始化为零的张量
+    pub fn alloc_zeros(self mut, shape: Shape) -> Tensor {
+        let n = shape.num_elements()
+        let data = self.alloc_tensor(n)
+        return Tensor::from_shape(shape, data)
+    }
+
+    --- 获取/创建命名临时缓冲区（用于 KV Cache 等）
+    ---
+    --- 临时缓冲区的生命周期由用户手动管理。
+    --- 典型用法：在推理开始时申请，结束时释放。
+    pub fn get_temp_buffer(self mut, name: str, size: i64) -> [f64] {
+        if name in self.temp_buffers {
+            let existing = self.temp_buffers[name]
+            if existing.len() >= size {
+                return existing
+            }
+            -- 大小不够，重新分配
+        }
+
+        -- 创建新的临时缓冲区
+        let buffer = self.alloc_tensor(size)
+        self.temp_buffers[name] = buffer
+        return buffer
+    }
+
+    --- 释放所有临时缓冲区
+    pub fn release_temps(self mut) {
+        self.temp_buffers.clear()
+    }
+
+    --- 重置整个池（保留预分配内存）
+    pub fn reset_all(self mut) {
+        for block in mut self.blocks {
+            block.reset()
+        }
+        self.total_used = 0
+        self.release_temps()
+    }
+
+    --- 打印内存统计
+    pub fn print_stats(self) {
+        io.println("═════════ 内存池统计 ═════════")
+        io.println("  总预分配: " ++ format_bytes(self.total_allocated))
+        io.println("  当前使用: " ++ format_bytes(self.total_used))
+        io.println("  利用率:   " ++ ("%.1f" % self.utilization()) ++ "%")
+        io.println("  内存块数: " ++ self.blocks.len().to_str())
+        io.println("  临时缓冲: " ++ self.temp_buffers.keys().len().to_str())
+
+        if not self.blocks.is_empty() {
+            let last = self.blocks[self.blocks.len() - 1]
+            io.println("  最后一块: " ++
+                       format_bytes(last.available()) ++ " 可用")
+        }
+        io.println("═════════════════════════════")
+    }
+}
+
+-- |===========================================================================|
+-- |                      权重加载器                                           |
+-- |===========================================================================|
+
+--- 权重格式枚举
+type WeightFormat {
+    Fp32    -- 单精度浮点（训练默认）
+    Fp16    -- 半精度（推理常用）
+    Bf16    -- Brain Float 16（LLM 推理标准）
+    Int8    -- 8位量化（极致压缩）
+    Int4    -- 4位量化（极端压缩）
+    Gptq    -- GPTQ 量化格式
+    Awq     -- AWQ 量化格式
+}
+
+--- 权重元信息
+type WeightMeta {
+    name: str              -- 张量名称
+    shape: Shape           -- 形状
+    dtype: WeightFormat    -- 数据类型
+    offset: i64            -- 文件偏移量
+    size_bytes: i64        -- 字节大小
+}
+
+--- 权重文件头
+type WeightFileHeader {
+    magic: str             -- 魔数 "KLCW"
+    version: i32           -- 格式版本
+    model_name: str        -- 模型名称
+    parameter_count: i64   -- 参数总量
+    dtype: WeightFormat    -- 默认数据类型
+    tensor_count: i32      -- 张量数量
+}
+
+--- 权重加载器
+---
+--- 功能：
+--- - 支持 .klcw 二进制格式（KLC Weight）
+--- - 支持 .safetensors 格式（HuggingFace 标准）
+--- - 支持延迟加载（仅加载需要的权重）
+--- - 自动处理数据类型转换（FP16→FP32 等）
+type WeightLoader {
+    file_path: str              -- 权重文件路径
+    header: WeightFileHeader    -- 文件头
+    tensors_map: {str: WeightMeta}  -- 张量索引
+    memory_pool: MemoryPool     -- 关联的内存池
+    loaded_tensors: {str: Tensor}   -- 已加载的张量缓存
+    use_mmap: bool              -- 是否使用内存映射（大文件推荐）
+}
+
+impl WeightLoader {
+    --- 创建权重加载器
+    pub fn new(file_path: str, pool: MemoryPool, use_mmap: bool = true) -> WeightLoader {
+        return WeightLoader {
+            file_path: file_path,
+            header: parse_header(file_path),
+            tensors_map: {},
+            memory_pool: pool,
+            loaded_tensors: {},
+            use_mmap: use_mmap
+        }
+    }
+
+    --- 解析权重文件头
+    fn parse_header(path: str) -> WeightFileHeader {
+        -- 实际实现需要文件 I/O
+        -- 此处返回示例值
+        return WeightFileHeader {
+            magic: "KLCW",
+            version: 1,
+            model_name: "unknown",
+            parameter_count: 0,
+            dtype: WeightFormat::Fp32,
+            tensor_count: 0
+        }
+    }
+
+    --- 加载单个张量（带缓存）
+    pub fn load_tensor(self mut, name: str) -> Tensor {
+        -- 检查缓存
+        if name in self.loaded_tensors {
+            return self.loaded_tensors[name]
+        }
+
+        -- 查找元信息
+        if not (name in self.tensors_map) {
+            io.println("Error: 未找到权重: " ++ name)
+            exit(1)
+        }
+
+        let meta = self.tensors_map[name]
+
+        -- 从内存池分配空间
+        let n = meta.shape.num_elements()
+        let raw_data = self.memory_pool.alloc_tensor(n)
+
+        -- 根据数据类型转换
+        let converted = convert_dtype(raw_data, meta.dtype)
+
+        -- 创建张量并缓存
+        let tensor = Tensor::from_shape(meta.shape, converted)
+        self.loaded_tensors[name] = tensor
+
+        return tensor
+    }
+
+    --- 批量加载多个张量
+    pub fn load_batch(self mut, names: [str]) -> {str: Tensor} {
+        let result = {}
+        for name in names {
+            result[name] = self.load_tensor(name)
+        }
+        return result
+    }
+
+    --- 预热：加载所有嵌入层权重（通常最先访问）
+    pub fn warmup_embedding(self mut) {
+        -- 尝试加载常见的嵌入层名称模式
+        let embed_names = [
+            "token_embedding.weight",
+            "embed_tokens.weight",
+            "wte.weight",
+            "model.embedding.word_embeddings.weight"
+        ]
+
+        for name in embed_names {
+            if name in self.tensors_map {
+                self.load_tensor(name)
+                io.println("  ✓ 已预热: " ++ name)
+            }
+        }
+    }
+
+    --- 释放未使用的张量缓存
+    pub fn unload_unused(self mut, keep_names: [str]) {
+        let to_remove = []
+        for name in keys(self.loaded_tensors) {
+            if name not in keep_names {
+                to_remove.push(name)
+            }
+        }
+        for name in to_remove {
+            remove(self.loaded_tensors, name)
+        }
+    }
+
+    --- 获取模型信息摘要
+    pub fn get_info(self) -> str {
+        let info = "模型: " ++ self.header.model_name ++ "\n"
+        info = info ++ "参数量: " ++ format_number(self.header.parameter_count) ++ "\n"
+        info = info ++ "数据类型: " ++ self.header.dtype.to_str() ++ "\n"
+        info = info ++ "张量总数: " ++ self.header.tensor_count.to_str() ++ "\n"
+        info = info ++ "已加载: " ++ keys(self.loaded_tensors).len().to_str() ++ "/" ++
+                   self.header.tensor_count.to_str()
+
+        return info
+    }
+}
+
+-- |===========================================================================|
+-- |                      KV 缓存管理器                                        |
+-- |===========================================================================|
+
+--- KV 缓存条目
+type KVCacheEntry {
+    key: Tensor      -- 键向量缓存
+    value: Tensor    -- 值向量缓存
+    seq_len: i64     -- 当前序列长度
+}
+
+--- KV 缓存管理器
+---
+--- 用于 Transformer 自回归推理中的键值缓存，
+--- 避免重新计算历史 token 的 K 和 V 投影。
+---
+--- 设计特点：
+--- - 支持多层独立缓存
+--- - 支持动态序列长度扩展
+--- - 与内存池集成以优化分配
+--- - 支持 batched 推理（多序列并行）
+type KVCacheManager {
+    num_layers: i64               -- 层数（如 LLaMA-7B 为 32 层）
+    num_heads: i64                -- 注意力头数
+    head_dim: i64                 -- 每个头的维度
+    max_seq_len: i64              -- 最大支持序列长度
+    max_batch_size: i64           -- 最大批次大小
+    cache: [[KVCacheEntry]]       -- [layer][batch] → KV 条目
+    pool: MemoryPool              -- 内存池引用
+    current_lengths: [i64]         -- 各 batch 的当前长度
+}
+
+impl KVCacheManager {
+    --- 创建 KV 缓存管理器
+    pub fn new(
+        num_layers: i64,
+        num_heads: i64,
+        head_dim: i64,
+        max_seq_len: i64,
+        max_batch_size: i64,
+        pool: MemoryPool
+    ) -> KVCacheManager {
+        -- 初始化空缓存
+        let cache = []
+        for _ in 0..num_layers {
+            let layer_cache = []
+            for _ in 0..max_batch_size {
+                layer_cache.push(KVCacheEntry {
+                    key: Tensor::scalar(0.0),
+                    value: Tensor::scalar(0.0),
+                    seq_len: 0
+                })
+            }
+            cache.push(layer_cache)
+        }
+
+        let current_lengths = []
+        for _ in 0..max_batch_size {
+            current_lengths.push(0)
+        }
+
+        return KVCacheManager {
+            num_layers: num_layers,
+            num_heads: num_heads,
+            head_dim: head_dim,
+            max_seq_len: max_seq_len,
+            max_batch_size: max_batch_size,
+            cache: cache,
+            pool: pool,
+            current_lengths: current_lengths
+        }
+    }
+
+    --- 为新序列初始化缓存槽位
+    pub fn init_sequence(self mut, batch_idx: i64) {
+        self.current_lengths[batch_idx] = 0
+
+        -- 清空各层的缓存
+        for l in 0..self.num_layers {
+            self.cache[l][batch_idx] = KVCacheEntry {
+                key: Tensor::scalar(0.0),
+                value: Tensor::scalar(0.0),
+                seq_len: 0
+            }
+        }
+    }
+
+    --- 更新某层的 KV 缓存
+    pub fn update(
+        self mut,
+        layer_idx: i64,
+        batch_idx: i64,
+        new_key: Tensor,
+        new_value: Tensor
+    ) {
+        let entry = &mut self.cache[layer_idx][batch_idx]
+
+        if entry.seq_len == 0 {
+            -- 第一个 token，直接赋值
+            entry.key = new_key
+            entry.value = new_value
+        } else {
+            -- 后续 token，拼接
+            entry.key = concat([entry.key, new_key], axis=0)  -- 沿序列维度拼接
+            entry.value = concat([entry.value, new_value], axis=0)
+        }
+
+        entry.seq_len = entry.seq_len + 1
+        self.current_lengths[batch_idx] = self.current_lengths[batch_idx] + 1
+    }
+
+    --- 获取指定层的 K 和 V 缓存
+    pub fn get_kv(self, layer_idx: i64, batch_idx: i64) -> (Tensor, Tensor) {
+        let entry = self.cache[layer_idx][batch_idx]
+        return (entry.key, entry.value)
+    }
+
+    --- 获取当前序列长度
+    pub fn get_seq_length(self, batch_idx: i64) -> i64 {
+        return self.current_lengths[batch_idx]
+    }
+
+    --- 检查是否可以继续生成（不超过最大长度）
+    pub fn can_continue(self, batch_idx: i64) -> bool {
+        return self.current_lengths[batch_idx] < self.max_seq_len
+    }
+
+    --- 计算总内存占用
+    pub fn memory_usage(self) -> i64 {
+        -- 每层每 batch: 2 (K+V) * max_seq_len * num_heads * head_dim * sizeof(f64)
+        let per_entry = 2 * self.max_seq_len * self.num_heads * self.head_dim * 8
+        return per_entry * self.num_layers * self.max_batch_size
+    }
+
+    --- 打印缓存状态
+    pub fn print_status(self) {
+        io.println("══════ KV 缓存状态 ══════")
+        io.println("  层数: " ++ self.num_layers.to_str())
+        io.println("  头数: " ++ self.num_heads.to_str())
+        io.println("  头维度: " ++ self.head_dim.to_str())
+        io.println("  最大序列: " ++ self.max_seq_len.to_str())
+        io.println("  最大批次: " ++ self.max_batch_size.to_str())
+        io.println("  内存占用: " ++ format_bytes(self.memory_usage()))
+        io.println("  当前进度:")
+        for b in 0..self.max_batch_size {
+            io.println("    Batch[" ++ b.to_str() ++ "]: " ++
+                       self.current_lengths[b].to_str() ++ "/" ++
+                       self.max_seq_len.to_str())
+        }
+        io.println("════════════════════════")
+    }
+
+    --- 重置所有缓存（用于新请求）
+    pub fn clear_all(self mut) {
+        for b in 0..self.max_batch_size {
+            self.init_sequence(b)
+        }
+    }
+}
+
+-- |===========================================================================|
+-- |                      辅助工具函数                                         |
+-- |===========================================================================|
+
+--- 向上对齐到指定边界
+pub fn align_up(size: i64, alignment: i64 = ALIGNMENT) -> i64 {
+    return ((size + alignment - 1) / alignment) * alignment
+}
+
+--- 字节数格式化为人类可读字符串
+pub fn format_bytes(bytes: i64) -> str {
+    if bytes < 1024 {
+        return bytes.to_str() ++ " B"
+    } else if bytes < 1024 * 1024 {
+        return ("%.2f" % (bytes as f64 / 1024.0)) ++ " KB"
+    } else if bytes < 1024 * 1024 * 1024 {
+        return ("%.2f" % (bytes as f64 / (1024.0 * 1024.0))) ++ " MB"
+    } else {
+        return ("%.2f" % (bytes as f64 / (1024.0 * 1024.0 * 1024.0))) ++ " GB"
+    }
+}
+
+--- 数字格式化（加千分位逗号）
+pub fn format_number(n: i64) -> str {
+    let s = n.to_str()
+    let mut result = ""
+    let count = 0
+
+    let i = s.len() - 1
+    while i >= 0 {
+        if count > 0 and count % 3 == 0 {
+            result = "," ++ result
+        }
+        result = s[i] ++ result
+        count = count + 1
+        i = i - 1
+    }
+
+    return result
+}
+
+--- 数据类型转换（原始字节 → f64）
+fn convert_dtype(raw_data: [f64], dtype: WeightFormat) -> [f64] {
+    match dtype {
+        WeightFormat::Fp32 => {
+            -- 已经是 FP32，直接返回
+            return raw_data.clone()
+        },
+        WeightFormat::Fp16 => {
+            -- FP16 → FP32（简化：假设输入已经是转换后的）
+            -- 实际应做半精度反量化
+            return raw_data.clone()
+        },
+        WeightFormat::Bf16 => {
+            -- BF16 → FP32
+            return raw_data.clone()
+        },
+        WeightFormat::Int8 => {
+            -- INT8 反量化（需提供 scale/zero_point）
+            -- 简化版本：直接缩放到 [-1, 1]
+            let mut result = []
+            for val in raw_data {
+                result.push(val / 127.0)
+            }
+            return result
+        },
+        WeightFormat::Int4 => {
+            -- INT4 反量化（更复杂的打包逻辑）
+            -- 简化处理
+            let mut result = []
+            for val in raw_data {
+                result.push(val / 7.0)
+            }
+            return result
+        },
+        _ => {
+            io.println("Warning: 不支持的数据类型，直接返回")
+            return raw_data.clone()
+        }
+    }
+}

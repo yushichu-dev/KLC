@@ -1,0 +1,21 @@
+# 编译产物
+target/
+build/
+*.o
+*.obj
+*.exe
+*.out
+*.so
+*.dylib
+*.dll
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

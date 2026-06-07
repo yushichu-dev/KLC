@@ -1,0 +1,64 @@
+-- concurrency.klc — 展示 KLC 并发模型：task, go, channel
+
+mod main
+use io
+use time
+
+--- 工作协程 - 模拟计算任务
+task compute(id: i32, value: i32) -> i32 {
+    io.println("[Task " ++ id.to_str() ++ "] computing...")
+    time.sleep(100)  -- 模拟耗时计算
+    let result = value * value
+    io.println("[Task " ++ id.to_str() ++ "] done: " ++ result.to_str())
+    return result
+}
+
+--- 带通道的生产者-消费者
+task producer(sender: Sender<i32>, start: i32, count: i32) {
+    for i in start..start + count {
+        io.println("[Producer] sending: " ++ i.to_str())
+        sender <- i   -- 发送到通道
+        time.sleep(50)
+    }
+    -- sender 离开作用域，通道关闭
+}
+
+task consumer(receiver: Receiver<i32>, id: i32) {
+    loop {
+        match <-receiver {
+            Some(value) => io.println("[Consumer " ++ id.to_str() ++ "] received: " ++ value.to_str())
+            None => break  -- 通道关闭
+        }
+    }
+    io.println("[Consumer " ++ id.to_str() ++ "] finished")
+}
+
+fn main() {
+    io.println("=== KLC Concurrency Demo ===\n")
+
+    -- 1. 启动多个协程并等待结果
+    io.println("-- 1. Parallel Computation --")
+    let t1 = go compute(1, 5)
+    let t2 = go compute(2, 10)
+    let t3 = go compute(3, 20)
+
+    let r1 = t1.wait()
+    let r2 = t2.wait()
+    let r3 = t3.wait()
+
+    io.println("Results: " ++ r1.to_str() ++ ", " ++ r2.to_str() ++ ", " ++ r3.to_str())
+
+    -- 2. 通道通信
+    io.println("\n-- 2. Channel Communication --")
+    let (sender, receiver) = channel::<i32>(8)  -- 缓冲区大小 8
+
+    let prod = go producer(sender, 1, 5)
+    let cons1 = go consumer(receiver.copy(), 1)
+    let cons2 = go consumer(receiver.copy(), 2)
+
+    prod.wait()
+    cons1.wait()
+    cons2.wait()
+
+    io.println("\n=== Concurrency demo complete! ===")
+}

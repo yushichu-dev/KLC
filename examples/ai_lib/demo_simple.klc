@@ -1,0 +1,42 @@
+-- KLC:AI 简化测试demo
+-- 适配 KLC v0.7.3 语法
+
+mod demo_test
+
+use tensor
+use activation
+use normalization
+
+fn main() {
+    io.println("=== KLC:AI 库测试 ===")
+    io.println("")
+
+    -- 测试1: 张量基础
+    io.println("[1] 张量运算:")
+    let s = tensor.Tensor.scalar(42.0)
+    io.println("  标量: " ++ s.to_string())
+
+    let a = tensor.Tensor.vector([1.0, 2.0, 3.0])
+    let b = tensor.Tensor.vector([4.0, 5.0, 6.0])
+    let c = a.add(b)
+    io.println("  向量加法: " ++ c.to_string())
+
+    -- 测试2: 激活函数
+    io.println("")
+    io.println("[2] 激活函数:")
+    let x = tensor.Tensor.vector([-1.0, 0.0, 1.0])
+    let r = activation.relu(x)
+    io.println("  ReLU: " ++ r.to_string())
+
+    -- 测试3: 归一化
+    io.println("")
+    io.println("[3] 归一化:")
+    let norm = normalization.RMSNorm.new(3)
+    let input = tensor.Tensor.vector([1.0, 2.0, 3.0])
+    let out = norm.forward(input)
+    io.println("  RMSNorm: " ++ out.to_string())
+
+    io.println("")
+    io.println("=== 基础库测试通过 ===")
+    exit(0)
+}

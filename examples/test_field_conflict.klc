@@ -1,0 +1,26 @@
+type A {
+    config: i64
+}
+
+type B {
+    config: str
+}
+
+impl A {
+    fn show(self) -> str {
+        return self.config.to_str()
+    }
+}
+
+impl B {
+    fn show(self) -> str {
+        return self.config
+    }
+}
+
+fn main() {
+    let a = A { config: 42 }
+    let b = B { config: "hello" }
+    io.println(a.show())
+    io.println(b.show())
+}
