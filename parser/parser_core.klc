@@ -1,0 +1,1208 @@
+﻿-- ============================================================================
+-- parser_core.klc — KLC 递归下降语法分析器（自举用，v1.4.6-β）
+-- Token 流 → AST（表达式优先级攀登 + 语句解析）
+-- ============================================================================
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [A] Token 类型定义（完整拷贝，确保独立运行）
+-- ═══════════════════════════════════════════════════════════════════════════
+
+enum TokenType {
+    Ident(String), Integer(i64), Float(f64),
+    StrLit(String), CharLit(char), Keyword(String),
+    Plus, Minus, Star, Slash, Percent,
+    Eq, Neq, Lt, Gt, Lte, Gte,
+    Assign, PlusEq, MinusEq, StarEq, SlashEq,
+    Arrow, FatArrow,
+    Colon, Colon2, Dot, DotDot, DotDotEq, Comma,
+    LParen, RParen, LBrace, RBrace, LBracket, RBracket,
+    Concat, Pipe, Bar, Ampersand, Question, Question2,
+    Eof, Unknown,
+}
+
+type Token {
+    kind: TokenType,
+    line: i64,
+    col: i64,
+    lexeme: String,
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [B] AST 类型定义
+-- ═══════════════════════════════════════════════════════════════════════════
+
+enum BinOp {
+    Add, Sub, Mul, Div, Mod,
+    Eq, Neq, Lt, Gt, Lte, Gte,
+    And, Or, Concat,
+}
+
+enum UnaryOp { Neg, Not }
+
+type BinaryNode { left: Expr, op: BinOp, right: Expr }
+type UnaryNode { op: UnaryOp, expr: Expr }
+type CallNode { name: String, args: Array }
+type FieldAccessNode { object: Expr, field: String }
+
+enum Expr {
+    Integer(i64), Float(f64), Str(String), Bool(bool),
+    Char(char), Ident(String), NullExpr,
+    Binary(BinaryNode), Unary(UnaryNode),
+    Call(CallNode), FieldAccess(FieldAccessNode),
+}
+
+type LetNode { name: String, mutable: bool, type_ann: String, value: Expr }
+type AssignNode { name: String, value: Expr }
+type WhileNode { cond: Expr, body: Array }
+type IfStmtNode { cond: Expr, then_block: Array, else_block: Array }
+type FnDefNode { name: String, params: Array, return_type: String, body: Array }
+type ParamNode { name: String, type_ann: String }
+type TypeDefNode { name: String, fields: Array }
+type StructFieldNode { name: String, type_ann: String, default_val: Expr }
+type EnumDefNode { name: String, variants: Array }
+type EnumVariantNode { name: String, fields: Array }
+type EnumFieldNode { name: String, type_ann: String }
+type ImplBlockNode { type_name: String, methods: Array }
+
+enum Stmt {
+    Let(LetNode), Assign(AssignNode),
+    ExprStmt(Expr), Return(Expr),
+    While(WhileNode), IfStmt(IfStmtNode),
+    Block(Array), FnDef(FnDefNode),
+    Print(Expr), PrintLn(Expr),
+    TypeDef(TypeDefNode), EnumDef(EnumDefNode),
+    ImplBlock(ImplBlockNode),
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [C] Parser 状态与辅助函数
+-- ═══════════════════════════════════════════════════════════════════════════
+
+type ParseState {
+    tokens: Array,
+    pos: i64,
+    n: i64,           -- token 总数
+}
+
+type ParseExprR { state: ParseState, expr: Expr }
+type ParseStmtR { state: ParseState, stmt: Stmt }
+type ParseStmtsR { state: ParseState, stmts: Array }
+
+fn parser_new(tokens: Array) -> ParseState {
+    return ParseState { tokens: tokens, pos: 0, n: tokens.len() }
+}
+
+fn parser_at_end(st: ParseState) -> bool {
+    if st.pos >= st.n { return true }
+    -- 检查当前 token 是否是 Eof
+    let tok = st.tokens[st.pos]
+    match tok.kind {
+        TokenType::Eof => return true
+        _ => return false
+    }
+}
+
+fn parser_peek(st: ParseState) -> Token {
+    if st.pos >= st.n {
+        return Token { kind: TokenType::Eof, line: 0, col: 0, lexeme: "" }
+    }
+    return st.tokens[st.pos]
+}
+
+fn parser_advance(st: ParseState) -> ParseState {
+    return ParseState { tokens: st.tokens, pos: st.pos + 1, n: st.n }
+}
+
+fn parser_peek_kind(st: ParseState) -> TokenType {
+    let tok = parser_peek(st)
+    return tok.kind
+}
+
+-- 判断当前 token 是否为指定关键字
+fn parser_is_kw(st: ParseState, kw: String) -> bool {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::Keyword(k) => return k == kw
+        _ => return false
+    }
+}
+
+-- 判断当前 token 是否为指定标识符
+fn parser_is_ident(st: ParseState, name: String) -> bool {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::Ident(s) => return s == name
+        _ => return false
+    }
+}
+
+-- 消费期望的 token，失败则报错（简化：返回 Null 占位）
+fn parser_expect(st: ParseState, expected: TokenType, err_msg: String) -> ParseState {
+    let tok = parser_peek(st)
+    -- 这里只能简单跳过（KLC 无法抛异常）
+    return parser_advance(st)
+}
+
+-- 消费一个 Token 并返回它的词素
+fn parser_consume_lexeme(st: ParseState) -> ParseState {
+    return parser_advance(st)
+}
+
+-- ============================================================================
+-- [D] 表达式解析 — 优先级攀登（递归实现，无 break）
+-- ============================================================================
+
+-- 入口
+fn parse_expr(st: ParseState) -> ParseExprR {
+    return parse_or(st)
+}
+
+-- level 1: or
+fn parse_or(st: ParseState) -> ParseExprR {
+    let r = parse_and(st)
+    return parse_or_more(r.state, r.expr)
+}
+fn parse_or_more(st: ParseState, left: Expr) -> ParseExprR {
+    if parser_is_kw(st, "or") {
+        let s2 = parser_advance(st)
+        let rr = parse_and(s2)
+        let node = BinaryNode { left: left, op: BinOp::Or, right: rr.expr }
+        return parse_or_more(rr.state, Expr::Binary(node))
+    }
+    return ParseExprR { state: st, expr: left }
+}
+
+-- level 2: and
+fn parse_and(st: ParseState) -> ParseExprR {
+    let r = parse_comparison(st)
+    return parse_and_more(r.state, r.expr)
+}
+fn parse_and_more(st: ParseState, left: Expr) -> ParseExprR {
+    if parser_is_kw(st, "and") {
+        let s2 = parser_advance(st)
+        let rr = parse_comparison(s2)
+        let node = BinaryNode { left: left, op: BinOp::And, right: rr.expr }
+        return parse_and_more(rr.state, Expr::Binary(node))
+    }
+    return ParseExprR { state: st, expr: left }
+}
+
+-- level 3: == != < > <= >=
+fn parse_comparison(st: ParseState) -> ParseExprR {
+    let r = parse_concat(st)
+    return parse_cmp_more(r.state, r.expr)
+}
+fn parse_cmp_more(st: ParseState, left: Expr) -> ParseExprR {
+    let tok = parser_peek(st)
+    let mut op = BinOp::Add  -- 占位
+    let mut matched = false
+    match tok.kind {
+        TokenType::Eq => {
+            op = BinOp::Eq
+            matched = true
+        }
+        TokenType::Neq => {
+            op = BinOp::Neq
+            matched = true
+        }
+        TokenType::Lt => {
+            op = BinOp::Lt
+            matched = true
+        }
+        TokenType::Gt => {
+            op = BinOp::Gt
+            matched = true
+        }
+        TokenType::Lte => {
+            op = BinOp::Lte
+            matched = true
+        }
+        TokenType::Gte => {
+            op = BinOp::Gte
+            matched = true
+        }
+        _ => {}
+    }
+    if matched {
+        let s2 = parser_advance(st)
+        let rr = parse_concat(s2)
+        let node = BinaryNode { left: left, op: op, right: rr.expr }
+        return parse_cmp_more(rr.state, Expr::Binary(node))
+    }
+    return ParseExprR { state: st, expr: left }
+}
+
+-- level 4: ++
+fn parse_concat(st: ParseState) -> ParseExprR {
+    let r = parse_term(st)
+    return parse_concat_more(r.state, r.expr)
+}
+fn parse_concat_more(st: ParseState, left: Expr) -> ParseExprR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::Concat => {
+            let s2 = parser_advance(st)
+            let rr = parse_term(s2)
+            let node = BinaryNode { left: left, op: BinOp::Concat, right: rr.expr }
+            return parse_concat_more(rr.state, Expr::Binary(node))
+        }
+        _ => {}
+    }
+    return ParseExprR { state: st, expr: left }
+}
+
+-- level 5: + -
+fn parse_term(st: ParseState) -> ParseExprR {
+    let r = parse_factor(st)
+    return parse_term_more(r.state, r.expr)
+}
+fn parse_term_more(st: ParseState, left: Expr) -> ParseExprR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::Plus => {
+            let s2 = parser_advance(st)
+            let rr = parse_factor(s2)
+            let node = BinaryNode { left: left, op: BinOp::Add, right: rr.expr }
+            return parse_term_more(rr.state, Expr::Binary(node))
+        }
+        TokenType::Minus => {
+            let s2 = parser_advance(st)
+            let rr = parse_factor(s2)
+            let node = BinaryNode { left: left, op: BinOp::Sub, right: rr.expr }
+            return parse_term_more(rr.state, Expr::Binary(node))
+        }
+        _ => {}
+    }
+    return ParseExprR { state: st, expr: left }
+}
+
+-- level 6: * / %
+fn parse_factor(st: ParseState) -> ParseExprR {
+    let r = parse_unary(st)
+    return parse_factor_more(r.state, r.expr)
+}
+fn parse_factor_more(st: ParseState, left: Expr) -> ParseExprR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::Star => {
+            let s2 = parser_advance(st)
+            let rr = parse_unary(s2)
+            let node = BinaryNode { left: left, op: BinOp::Mul, right: rr.expr }
+            return parse_factor_more(rr.state, Expr::Binary(node))
+        }
+        TokenType::Slash => {
+            let s2 = parser_advance(st)
+            let rr = parse_unary(s2)
+            let node = BinaryNode { left: left, op: BinOp::Div, right: rr.expr }
+            return parse_factor_more(rr.state, Expr::Binary(node))
+        }
+        TokenType::Percent => {
+            let s2 = parser_advance(st)
+            let rr = parse_unary(s2)
+            let node = BinaryNode { left: left, op: BinOp::Mod, right: rr.expr }
+            return parse_factor_more(rr.state, Expr::Binary(node))
+        }
+        _ => {}
+    }
+    return ParseExprR { state: st, expr: left }
+}
+
+-- level 7: -x, not x
+fn parse_unary(st: ParseState) -> ParseExprR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::Minus => {
+            let s2 = parser_advance(st)
+            let r = parse_unary(s2)
+            let node = UnaryNode { op: UnaryOp::Neg, expr: r.expr }
+            return ParseExprR { state: r.state, expr: Expr::Unary(node) }
+        }
+        _ => {}
+    }
+    if parser_is_kw(st, "not") {
+        let s2 = parser_advance(st)
+        let r = parse_unary(s2)
+        let node = UnaryNode { op: UnaryOp::Not, expr: r.expr }
+        return ParseExprR { state: r.state, expr: Expr::Unary(node) }
+    }
+    return parse_call(st)
+}
+
+-- level 8: 函数调用、字段访问、索引
+fn parse_call(st: ParseState) -> ParseExprR {
+    let r = parse_primary(st)
+    let mut left = r.expr
+    let mut cur = r.state
+
+    -- 循环处理后缀操作: (args), .field, [idx]
+    -- 用递归代替 while+break
+    return parse_call_suffix(cur, left)
+}
+
+fn parse_call_suffix(st: ParseState, left: Expr) -> ParseExprR {
+    let tok = parser_peek(st)
+
+    -- 函数调用 (
+    match tok.kind {
+        TokenType::LParen => {
+            let s2 = parser_advance(st)
+            let result = parse_arg_list(s2)
+            -- 提取函数名
+            let fname = expr_name_str(left)
+            let node = CallNode { name: fname, args: result.args }
+            return parse_call_suffix(result.state, Expr::Call(node))
+        }
+        _ => {}
+    }
+
+    -- 字段访问 .
+    match tok.kind {
+        TokenType::Dot => {
+            let s2 = parser_advance(st)
+            let field_tok = parser_peek(s2)
+            let field_name = token_lexeme(field_tok)
+            let s3 = parser_advance(s2)
+            let node = FieldAccessNode { object: left, field: field_name }
+            return parse_call_suffix(s3, Expr::FieldAccess(node))
+        }
+        _ => {}
+    }
+
+    -- 索引 [
+    match tok.kind {
+        TokenType::LBracket => {
+            let s2 = parser_advance(st)
+            let idx_r = parse_expr(s2)
+            let s3 = parser_advance(idx_r.state)  -- skip ]
+            -- 转为 call("__index_get", [obj, idx])
+            let node = CallNode { name: "__index_get", args: [left, idx_r.expr] }
+            return parse_call_suffix(s3, Expr::Call(node))
+        }
+        _ => {}
+    }
+
+    return ParseExprR { state: st, expr: left }
+}
+
+-- 解析参数列表 (expr, expr, ...)
+fn parse_arg_list(st: ParseState) -> ArgsR {
+    let mut args = []
+    let mut cur = st
+    -- 空参数列表
+    let tok = parser_peek(cur)
+    match tok.kind {
+        TokenType::RParen => {
+            cur = parser_advance(cur)
+            return ArgsR { state: cur, args: args }
+        }
+        _ => {}
+    }
+    -- 解析第一个参数
+    let r1 = parse_expr(cur)
+    args.push(r1.expr)
+    cur = r1.state
+    -- 循环解析更多参数
+    return parse_arg_more(cur, args)
+}
+
+type ArgsR { state: ParseState, args: Array }
+
+fn parse_arg_more(st: ParseState, args: Array) -> ArgsR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::Comma => {
+            let s2 = parser_advance(st)
+            let r = parse_expr(s2)
+            args.push(r.expr)
+            return parse_arg_more(r.state, args)
+        }
+        TokenType::RParen => {
+            let s2 = parser_advance(st)
+            return ArgsR { state: s2, args: args }
+        }
+        _ => {}
+    }
+    return ArgsR { state: st, args: args }
+}
+
+-- level 9: 原子表达式
+fn parse_primary(st: ParseState) -> ParseExprR {
+    let tok = parser_peek(st)
+    let s2 = parser_advance(st)
+
+    match tok.kind {
+        TokenType::Integer(n) => { return ParseExprR { state: s2, expr: Expr::Integer(n) } }
+        TokenType::Float(f)    => { return ParseExprR { state: s2, expr: Expr::Float(f) } }
+        TokenType::StrLit(s)   => { return ParseExprR { state: s2, expr: Expr::Str(s) } }
+        TokenType::CharLit(c)  => { return ParseExprR { state: s2, expr: Expr::Char(c) } }
+        TokenType::Ident(name) => { return ParseExprR { state: s2, expr: Expr::Ident(name) } }
+        TokenType::Keyword(kw) => {
+            if kw == "true"  { return ParseExprR { state: s2, expr: Expr::Bool(true) } }
+            if kw == "false" { return ParseExprR { state: s2, expr: Expr::Bool(false) } }
+            if kw == "null"  { return ParseExprR { state: s2, expr: Expr::NullExpr } }
+            return ParseExprR { state: s2, expr: Expr::Ident(kw) }
+        }
+        TokenType::LParen => {
+            let r = parse_expr(s2)
+            let s3 = parser_advance(r.state)  -- skip )
+            return ParseExprR { state: s3, expr: r.expr }
+        }
+        _ => {}
+    }
+
+    return ParseExprR { state: s2, expr: Expr::NullExpr }
+}
+
+-- 辅助：从表达式提取标识符名
+fn expr_name_str(e: Expr) -> String {
+    match e {
+        Expr::Ident(s) => return s
+        _ => return ""
+    }
+}
+
+-- 辅助：从 Token 提取词素文本
+fn token_lexeme(tok: Token) -> String {
+    return tok.lexeme
+}
+
+-- ============================================================================
+-- [E] 语句解析
+-- ============================================================================
+
+fn parse_statement(st: ParseState) -> ParseStmtR {
+    let tok = parser_peek(st)
+
+    -- io.println / io.print
+    match tok.kind {
+        TokenType::Ident(s) => {
+            if s == "io" {
+                return parse_io_call(st)
+            }
+        }
+        _ => {}
+    }
+
+    -- println / print / exit
+    match tok.kind {
+        TokenType::Ident(s) => {
+            if s == "println" { return parse_bare_print(st, true) }
+            if s == "print"   { return parse_bare_print(st, false) }
+        }
+        _ => {}
+    }
+
+    -- 关键字
+    if parser_is_kw(st, "let")    { return parse_let_stmt(st) }
+    if parser_is_kw(st, "fn")     { return parse_fn_def(st) }
+    if parser_is_kw(st, "return") { return parse_return_stmt(st) }
+    if parser_is_kw(st, "if")     { return parse_if_stmt(st) }
+    if parser_is_kw(st, "while")  { return parse_while_stmt(st) }
+    if parser_is_kw(st, "for")    { return parse_for_stmt(st) }
+    if parser_is_kw(st, "type")   { return parse_type_def(st) }
+    if parser_is_kw(st, "enum")   { return parse_enum_def(st) }
+    if parser_is_kw(st, "impl")   { return parse_impl_block(st) }
+    if parser_is_kw(st, "mod")    { return ParseStmtR { state: parser_advance(parser_advance(st)), stmt: Stmt::ExprStmt(Expr::NullExpr) } }
+    if parser_is_kw(st, "use")    { return ParseStmtR { state: parser_advance(parser_advance(st)), stmt: Stmt::ExprStmt(Expr::NullExpr) } }
+
+    -- 赋值语句: ident = expr
+    if is_assignment_pattern(st) {
+        return parse_assignment(st)
+    }
+
+    -- 默认：表达式语句
+    let r = parse_expr(st)
+    return ParseStmtR { state: r.state, stmt: Stmt::ExprStmt(r.expr) }
+}
+
+-- ============================================================================
+-- io.println / io.print
+-- ============================================================================
+
+fn parse_io_call(st: ParseState) -> ParseStmtR {
+    -- 跳过 io
+    let s1 = parser_advance(st)
+    -- 跳过 .
+    let s2 = parser_advance(s1)
+    -- 读取函数名
+    let fn_tok = parser_peek(s2)
+    let fn_name = token_lexeme(fn_tok)
+    let s3 = parser_advance(s2)
+    -- 跳过 (
+    let s4 = parser_advance(s3)
+    -- 解析参数
+    let arg_r = parse_expr(s4)
+    -- 跳过 )
+    let s5 = parser_advance(arg_r.state)
+
+    if fn_name == "println" {
+        return ParseStmtR { state: s5, stmt: Stmt::PrintLn(arg_r.expr) }
+    }
+    return ParseStmtR { state: s5, stmt: Stmt::Print(arg_r.expr) }
+}
+
+fn parse_bare_print(st: ParseState, is_ln: bool) -> ParseStmtR {
+    let s1 = parser_advance(st)   -- skip println/print
+    let s2 = parser_advance(s1)   -- skip (
+    let arg_r = parse_expr(s2)
+    let s3 = parser_advance(arg_r.state)  -- skip )
+
+    if is_ln {
+        return ParseStmtR { state: s3, stmt: Stmt::PrintLn(arg_r.expr) }
+    }
+    return ParseStmtR { state: s3, stmt: Stmt::Print(arg_r.expr) }
+}
+
+-- ============================================================================
+-- let 语句
+-- ============================================================================
+
+fn parse_let_stmt(st: ParseState) -> ParseStmtR {
+    let s1 = parser_advance(st)   -- skip let
+    let mut cur = s1
+    let mut is_mut = false
+
+    if parser_is_kw(cur, "mut") {
+        is_mut = true
+        cur = parser_advance(cur)
+    }
+
+    -- 变量名
+    let name_tok = parser_peek(cur)
+    let name = token_lexeme(name_tok)
+    cur = parser_advance(cur)
+
+    -- 类型标注（可选）
+    let mut type_ann = ""
+    let ctok = parser_peek(cur)
+    match ctok.kind {
+        TokenType::Colon => {
+            cur = parser_advance(cur)
+            let type_tok = parser_peek(cur)
+            type_ann = token_lexeme(type_tok)
+            cur = parser_advance(cur)
+        }
+        _ => {}
+    }
+
+    -- =
+    cur = parser_advance(cur)  -- skip =
+
+    -- 值表达式
+    let val_r = parse_expr(cur)
+
+    let node = LetNode { name: name, mutable: is_mut, type_ann: type_ann, value: val_r.expr }
+    return ParseStmtR { state: val_r.state, stmt: Stmt::Let(node) }
+}
+
+-- ============================================================================
+-- 赋值检测与解析
+-- ============================================================================
+
+fn is_assignment_pattern(st: ParseState) -> bool {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::Ident(_) => {
+            -- 看下一个 token 是否是 = 或 .field =
+            if st.pos + 1 < st.n {
+                let t1 = st.tokens[st.pos + 1]
+                match t1.kind { TokenType::Assign => return true _ => {} }
+                match t1.kind { TokenType::Dot => {
+                    if st.pos + 3 < st.n {
+                        let t3 = st.tokens[st.pos + 3]
+                        match t3.kind { TokenType::Assign => return true _ => {} }
+                    }
+                } _ => {} }
+            }
+            return false
+        }
+        _ => return false
+    }
+}
+
+fn parse_assignment(st: ParseState) -> ParseStmtR {
+    let name_tok = parser_peek(st)
+    let name = token_lexeme(name_tok)
+    let s1 = parser_advance(st)
+
+    -- 检查 .field
+    let dot_tok = parser_peek(s1)
+    match dot_tok.kind {
+        TokenType::Dot => {
+            let s2 = parser_advance(s1)
+            let field_tok = parser_peek(s2)
+            let field = token_lexeme(field_tok)
+            let s3 = parser_advance(s2)
+            let s4 = parser_advance(s3)  -- skip =
+            let val_r = parse_expr(s4)
+            return ParseStmtR { state: val_r.state, stmt: Stmt::Assign(AssignNode { name: name ++ "." ++ field, value: val_r.expr }) }
+        }
+        _ => {}
+    }
+
+    -- 简单赋值
+    let s2 = parser_advance(s1)  -- skip =
+    let val_r = parse_expr(s2)
+    let node = AssignNode { name: name, value: val_r.expr }
+    return ParseStmtR { state: val_r.state, stmt: Stmt::Assign(node) }
+}
+
+-- ============================================================================
+-- return 语句
+-- ============================================================================
+
+fn parse_return_stmt(st: ParseState) -> ParseStmtR {
+    let s1 = parser_advance(st)  -- skip return
+
+    -- 检查是否无返回值
+    let tok = parser_peek(s1)
+    match tok.kind {
+        TokenType::RBrace => { return ParseStmtR { state: s1, stmt: Stmt::Return(Expr::NullExpr) } }
+        TokenType::Eof => { return ParseStmtR { state: s1, stmt: Stmt::Return(Expr::NullExpr) } }
+        _ => {}
+    }
+
+    let val_r = parse_expr(s1)
+    return ParseStmtR { state: val_r.state, stmt: Stmt::Return(val_r.expr) }
+}
+
+-- ============================================================================
+-- if 语句
+-- ============================================================================
+
+fn parse_if_stmt(st: ParseState) -> ParseStmtR {
+    let s1 = parser_advance(st)  -- skip if
+    let cond_r = parse_expr(s1)
+    let block_r = parse_block(cond_r.state)
+
+    -- else?
+    let mut else_stmts = []
+    let mut cur = block_r.state
+    if parser_is_kw(cur, "else") {
+        cur = parser_advance(cur)
+        -- else if?
+        if parser_is_kw(cur, "if") {
+            let nested = parse_if_stmt(cur)
+            else_stmts = [nested.stmt]
+            cur = nested.state
+        } else {
+            let eb = parse_block(cur)
+            else_stmts = eb.stmts
+            cur = eb.state
+        }
+    }
+
+    let node = IfStmtNode { cond: cond_r.expr, then_block: block_r.stmts, else_block: else_stmts }
+    return ParseStmtR { state: cur, stmt: Stmt::IfStmt(node) }
+}
+
+-- ============================================================================
+-- while 语句
+-- ============================================================================
+
+fn parse_while_stmt(st: ParseState) -> ParseStmtR {
+    let s1 = parser_advance(st)  -- skip while
+    let cond_r = parse_expr(s1)
+    let block_r = parse_block(cond_r.state)
+    let node = WhileNode { cond: cond_r.expr, body: block_r.stmts }
+    return ParseStmtR { state: block_r.state, stmt: Stmt::While(node) }
+}
+
+-- ============================================================================
+-- for-in 语句
+-- ============================================================================
+
+fn parse_for_stmt(st: ParseState) -> ParseStmtR {
+    -- 简化实现：for var in expr { body } → While
+    let s1 = parser_advance(st)   -- skip for
+    let var_tok = parser_peek(s1)
+    let var_name = token_lexeme(var_tok)
+    let s2 = parser_advance(s1)
+    let s3 = parser_advance(s2)   -- skip in
+    let iter_r = parse_expr(s3)
+    let block_r = parse_block(iter_r.state)
+
+    -- 构造 for 节点的 body（包装为 Let 初始化 + While 循环）
+    let mut stmts = []
+    stmts.push(block_r.stmts)  -- 简化：body 还保持原样
+    let node = WhileNode { cond: Expr::Bool(true), body: stmts }
+    return ParseStmtR { state: block_r.state, stmt: Stmt::While(node) }
+}
+
+-- ============================================================================
+-- 代码块 { stmt... }
+-- ============================================================================
+
+fn parse_block(st: ParseState) -> ParseStmtsR {
+    let s1 = parser_advance(st)  -- skip {
+    return parse_block_stmts(s1)
+}
+
+fn parse_block_stmts(st: ParseState) -> ParseStmtsR {
+    let mut stmts = []
+    let mut cur = st
+
+    -- 循环解析直到 }
+    return parse_block_loop(cur, stmts)
+}
+
+fn parse_block_loop(st: ParseState, stmts: Array) -> ParseStmtsR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::RBrace => {
+            let s2 = parser_advance(st)
+            return ParseStmtsR { state: s2, stmts: stmts }
+        }
+        TokenType::Eof => {
+            return ParseStmtsR { state: st, stmts: stmts }
+        }
+        _ => {}
+    }
+
+    -- 解析一条语句
+    let sr = parse_statement(st)
+    stmts.push(sr.stmt)
+    return parse_block_loop(sr.state, stmts)
+}
+
+-- ============================================================================
+-- 函数定义
+-- ============================================================================
+
+fn parse_fn_def(st: ParseState) -> ParseStmtR {
+    let s1 = parser_advance(st)  -- skip fn
+    let name_tok = parser_peek(s1)
+    let name = token_lexeme(name_tok)
+    let s2 = parser_advance(s1)
+
+    -- 参数列表
+    let s3 = parser_advance(s2)  -- skip (
+    let params_r = parse_param_list(s3)
+
+    -- 返回类型（可选）
+    let mut ret_type = ""
+    let mut cur = params_r.state
+    let arrow_tok = parser_peek(cur)
+    match arrow_tok.kind {
+        TokenType::Arrow => {
+            cur = parser_advance(cur)
+            let rt_tok = parser_peek(cur)
+            ret_type = token_lexeme(rt_tok)
+            cur = parser_advance(cur)
+        }
+        _ => {}
+    }
+
+    -- 函数体
+    let body_r = parse_block(cur)
+
+    let node = FnDefNode { name: name, params: params_r.params, return_type: ret_type, body: body_r.stmts }
+    return ParseStmtR { state: body_r.state, stmt: Stmt::FnDef(node) }
+}
+
+type ParamsR { state: ParseState, params: Array }
+
+fn parse_param_list(st: ParseState) -> ParamsR {
+    let mut params = []
+    let mut cur = st
+
+    let tok = parser_peek(cur)
+    match tok.kind {
+        TokenType::RParen => {
+            cur = parser_advance(cur)
+            return ParamsR { state: cur, params: params }
+        }
+        _ => {}
+    }
+
+    return parse_param_more(cur, params)
+}
+
+fn parse_param_more(st: ParseState, params: Array) -> ParamsR {
+    let tok = parser_peek(st)
+
+    -- 检查结束
+    match tok.kind {
+        TokenType::RParen => {
+            let s2 = parser_advance(st)
+            return ParamsR { state: s2, params: params }
+        }
+        _ => {}
+    }
+
+    -- 解析单个参数
+    let name_tok = parser_peek(st)
+    let pname = token_lexeme(name_tok)
+    let mut cur = parser_advance(st)
+
+    -- 跳过 self mut 中的 mut
+    if pname == "self" and parser_is_kw(cur, "mut") {
+        cur = parser_advance(cur)
+    }
+
+    -- 类型标注
+    let mut ptype = ""
+    let ct = parser_peek(cur)
+    match ct.kind {
+        TokenType::Colon => {
+            cur = parser_advance(cur)
+            let tt = parser_peek(cur)
+            ptype = token_lexeme(tt)
+            cur = parser_advance(cur)
+        }
+        _ => {}
+    }
+
+    let param = ParamNode { name: pname, type_ann: ptype }
+    params.push(param)
+
+    -- 逗号分隔
+    let comma_tok = parser_peek(cur)
+    match comma_tok.kind {
+        TokenType::Comma => {
+            cur = parser_advance(cur)
+            return parse_param_more(cur, params)
+        }
+        _ => {}
+    }
+
+    return parse_param_more(cur, params)
+}
+
+-- ============================================================================
+-- type / enum / impl 定义（简化处理）
+-- ============================================================================
+
+fn parse_type_def(st: ParseState) -> ParseStmtR {
+    let s1 = parser_advance(st)  -- skip type
+    let name_tok = parser_peek(s1)
+    let name = token_lexeme(name_tok)
+    let s2 = parser_advance(s1)
+    let s3 = parser_advance(s2)  -- skip {
+    let flds_r = parse_struct_fields(s3)
+    let node = TypeDefNode { name: name, fields: flds_r.fields }
+    return ParseStmtR { state: flds_r.state, stmt: Stmt::TypeDef(node) }
+}
+
+type FieldsR { state: ParseState, fields: Array }
+
+fn parse_struct_fields(st: ParseState) -> FieldsR {
+    let mut fields = []
+    let mut cur = st
+    return parse_fields_loop(cur, fields)
+}
+
+fn parse_fields_loop(st: ParseState, fields: Array) -> FieldsR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::RBrace => {
+            let s2 = parser_advance(st)
+            return FieldsR { state: s2, fields: fields }
+        }
+        TokenType::Eof => {
+            return FieldsR { state: st, fields: fields }
+        }
+        _ => {}
+    }
+
+    let fname_tok = parser_peek(st)
+    let fname = token_lexeme(fname_tok)
+    let mut cur = parser_advance(st)
+    cur = parser_advance(cur)  -- skip :
+
+    let ftype_tok = parser_peek(cur)
+    let ftype = token_lexeme(ftype_tok)
+    cur = parser_advance(cur)
+
+    let field = StructFieldNode { name: fname, type_ann: ftype, default_val: Expr::NullExpr }
+    fields.push(field)
+
+    -- 逗号
+    match parser_peek(cur).kind {
+        TokenType::Comma => {
+            cur = parser_advance(cur)
+        }
+        _ => {}
+    }
+
+    return parse_fields_loop(cur, fields)
+}
+
+fn parse_enum_def(st: ParseState) -> ParseStmtR {
+    let s1 = parser_advance(st)
+    let name_tok = parser_peek(s1)
+    let name = token_lexeme(name_tok)
+    let s2 = parser_advance(s1)
+    let s3 = parser_advance(s2)
+    let vr = parse_enum_variants(s3)
+    let node = EnumDefNode { name: name, variants: vr.variants }
+    return ParseStmtR { state: vr.state, stmt: Stmt::EnumDef(node) }
+}
+
+type VariantsR { state: ParseState, variants: Array }
+
+fn parse_enum_variants(st: ParseState) -> VariantsR {
+    let mut variants = []
+    let mut cur = st
+    return parse_variants_loop(cur, variants)
+}
+
+fn parse_variants_loop(st: ParseState, variants: Array) -> VariantsR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::RBrace => {
+            let s2 = parser_advance(st)
+            return VariantsR { state: s2, variants: variants }
+        }
+        TokenType::Eof => {
+            return VariantsR { state: st, variants: variants }
+        }
+        _ => {}
+    }
+
+    let vname_tok = parser_peek(st)
+    let vname = token_lexeme(vname_tok)
+    let mut cur = parser_advance(st)
+    let mut vfields = []
+
+    -- 变体参数 (...)
+    match parser_peek(cur).kind {
+        TokenType::LParen => {
+            cur = parser_advance(cur)
+            -- 跳过类型参数（简化为读取到 )）
+            local_skip_to_rparen(cur, vname, vfields)
+            -- 这里的 local_skip_to_rparen 不好实现，直接用简化逻辑
+        }
+        _ => {}
+    }
+
+    -- 逗号
+    match parser_peek(cur).kind {
+        TokenType::Comma => { cur = parser_advance(cur) }
+        _ => {}
+    }
+
+    let variant = EnumVariantNode { name: vname, fields: vfields }
+    variants.push(variant)
+    return parse_variants_loop(cur, variants)
+}
+
+fn local_skip_to_rparen(st: ParseState, vname: String, vfields: Array) -> ParseState {
+    -- 简化：跳过直到 )
+    let mut cur = st
+    return skip_to_rparen_loop(cur)
+}
+
+fn skip_to_rparen_loop(st: ParseState) -> ParseState {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::RParen => return parser_advance(st)
+        TokenType::Eof => return st
+        _ => {}
+    }
+    return skip_to_rparen_loop(parser_advance(st))
+}
+
+fn parse_impl_block(st: ParseState) -> ParseStmtR {
+    let s1 = parser_advance(st)
+    let name_tok = parser_peek(s1)
+    let name = token_lexeme(name_tok)
+    let mut cur = parser_advance(s1)
+
+    -- 跳过 impl Trait for Type 语法和泛型
+    -- 简化为直接跳过直到 {
+    return skip_to_impl_body(cur, name)
+}
+
+fn skip_to_impl_body(st: ParseState, name: String) -> ParseStmtR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::LBrace => {
+            let s2 = parser_advance(st)
+            -- 解析方法列表
+            return parse_impl_methods(s2, name)
+        }
+        TokenType::Eof => {
+            let node = ImplBlockNode { type_name: name, methods: [] }
+            return ParseStmtR { state: st, stmt: Stmt::ImplBlock(node) }
+        }
+        _ => {}
+    }
+    return skip_to_impl_body(parser_advance(st), name)
+}
+
+fn parse_impl_methods(st: ParseState, name: String) -> ParseStmtR {
+    let mut methods = []
+    let mut cur = st
+
+    -- 循环直到 }
+    return parse_impl_methods_loop(cur, name, methods)
+}
+
+fn parse_impl_methods_loop(st: ParseState, name: String, methods: Array) -> ParseStmtR {
+    let tok = parser_peek(st)
+    match tok.kind {
+        TokenType::RBrace => {
+            let node = ImplBlockNode { type_name: name, methods: methods }
+            return ParseStmtR { state: parser_advance(st), stmt: Stmt::ImplBlock(node) }
+        }
+        TokenType::Eof => {
+            let node = ImplBlockNode { type_name: name, methods: methods }
+            return ParseStmtR { state: st, stmt: Stmt::ImplBlock(node) }
+        }
+        _ => {}
+    }
+
+    -- 解析方法（fn）
+    if parser_is_kw(st, "fn") {
+        let sr = parse_fn_def(st)
+        methods.push(sr.stmt)
+        return parse_impl_methods_loop(sr.state, name, methods)
+    }
+
+    -- 跳过其他
+    return parse_impl_methods_loop(parser_advance(st), name, methods)
+}
+
+-- ============================================================================
+-- [F] 程序入口：解析整个文件
+-- ============================================================================
+
+fn parse_program(tokens: Array) -> Array {
+    let mut st = parser_new(tokens)
+    let mut stmts = []
+
+    return parse_program_loop(st, stmts)
+}
+
+fn parse_program_loop(st: ParseState, stmts: Array) -> Array {
+    if parser_at_end(st) {
+        return stmts
+    }
+
+    let sr = parse_statement(st)
+    stmts.push(sr.stmt)
+    return parse_program_loop(sr.state, stmts)
+}
+
+-- ============================================================================
+-- [G] AST 格式化输出
+-- ============================================================================
+
+fn binop_name(op: BinOp) -> String {
+    match op {
+        BinOp::Add => return "+"
+        BinOp::Sub => return "-"
+        BinOp::Mul => return "*"
+        BinOp::Div => return "/"
+        BinOp::Mod => return "%"
+        BinOp::Eq => return "=="
+        BinOp::Neq => return "!="
+        BinOp::Lt => return "<"
+        BinOp::Gt => return ">"
+        BinOp::Lte => return "<="
+        BinOp::Gte => return ">="
+        BinOp::And => return "and"
+        BinOp::Or => return "or"
+        BinOp::Concat => return "++"
+        _ => return "?"
+    }
+}
+
+fn expr_to_str(e: Expr, indent: String) -> String {
+    match e {
+        Expr::Integer(n) => return indent ++ "Int(" ++ n.to_str() ++ ")"
+        Expr::Float(f) => return indent ++ "Float(" ++ f.to_str() ++ ")"
+        Expr::Str(s) => return indent ++ "Str(\"" ++ s ++ "\")"
+        Expr::Bool(b) => return indent ++ "Bool(" ++ b.to_str() ++ ")"
+        Expr::Char(c) => return indent ++ "Char('" ++ c.to_str() ++ "')"
+        Expr::Ident(s) => return indent ++ "Ident(" ++ s ++ ")"
+        Expr::NullExpr => return indent ++ "Null"
+        Expr::Binary(node) => {
+            let mut s = indent ++ "Binary\n"
+            s = s ++ expr_to_str(node.left, indent ++ "  L: ") ++ "\n"
+            s = s ++ indent ++ "  Op: " ++ binop_name(node.op) ++ "\n"
+            s = s ++ expr_to_str(node.right, indent ++ "  R: ")
+            return s
+        }
+        Expr::Unary(node) => {
+            let op_s = match node.op { UnaryOp::Neg => return indent ++ "Neg" _ => {} }
+            return indent ++ "Not"
+        }
+        Expr::Call(node) => {
+            let mut s = indent ++ "Call(" ++ node.name ++ ")"
+            if node.args.len() > 0 {
+                s = s ++ " [" ++ node.args.len().to_str() ++ " args]"
+            }
+            return s
+        }
+        Expr::FieldAccess(node) => {
+            return indent ++ "Field(" ++ expr_name_str(node.object) ++ "." ++ node.field ++ ")"
+        }
+        _ => return indent ++ "?"
+    }
+}
+
+fn stmt_to_str(s: Stmt, indent: String) -> String {
+    match s {
+        Stmt::Let(node) => {
+            let mut s = indent ++ "Let " ++ node.name
+            if node.type_ann != "" { s = s ++ ": " ++ node.type_ann }
+            s = s ++ "\n" ++ expr_to_str(node.value, indent ++ "  = ")
+            return s
+        }
+        Stmt::Assign(node) => {
+            let mut s = indent ++ "Assign " ++ node.name ++ "\n"
+            s = s ++ expr_to_str(node.value, indent ++ "  = ")
+            return s
+        }
+        Stmt::ExprStmt(e) => return expr_to_str(e, indent ++ "ExprStmt: ")
+        Stmt::Return(e) => {
+            return expr_to_str(e, indent ++ "Return ")
+        }
+        Stmt::While(node) => {
+            return indent ++ "While(cond) [" ++ node.body.len().to_str() ++ " stmts]"
+        }
+        Stmt::IfStmt(node) => {
+            let mut s = indent ++ "If(cond) then[" ++ node.then_block.len().to_str() ++ "]"
+            if node.else_block.len() > 0 {
+                s = s ++ " else[" ++ node.else_block.len().to_str() ++ "]"
+            }
+            return s
+        }
+        Stmt::Block(stmts) => {
+            return indent ++ "Block [" ++ stmts.len().to_str() ++ " stmts]"
+        }
+        Stmt::FnDef(node) => {
+            let mut s = indent ++ "Fn " ++ node.name ++ "(" ++ node.params.len().to_str() ++ " params)"
+            if node.return_type != "" { s = s ++ " -> " ++ node.return_type }
+            s = s ++ " [" ++ node.body.len().to_str() ++ " stmts]"
+            return s
+        }
+        Stmt::Print(e) => {
+            return expr_to_str(e, indent ++ "Print ")
+        }
+        Stmt::PrintLn(e) => {
+            return expr_to_str(e, indent ++ "PrintLn ")
+        }
+        Stmt::TypeDef(node) => {
+            return indent ++ "Type " ++ node.name ++ " [" ++ node.fields.len().to_str() ++ " fields]"
+        }
+        Stmt::EnumDef(node) => {
+            return indent ++ "Enum " ++ node.name ++ " [" ++ node.variants.len().to_str() ++ " variants]"
+        }
+        Stmt::ImplBlock(node) => {
+            return indent ++ "Impl " ++ node.type_name ++ " [" ++ node.methods.len().to_str() ++ " methods]"
+        }
+        _ => return indent ++ "?"
+    }
+}
+
+fn print_ast(stmts: Array) {
+    let n = stmts.len()
+    let mut i = 0
+    while i < n {
+        io.println(stmt_to_str(stmts[i], ""))
+        i = i + 1
+    }
+}

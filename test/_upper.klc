@@ -1,0 +1,3 @@
+let MyVar = 42
+let anotherVar = MyVar + 8
+println(anotherVar)

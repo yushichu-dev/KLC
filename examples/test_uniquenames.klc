@@ -1,0 +1,32 @@
+type A {
+    x: i64
+}
+
+type B {
+    y: i64
+}
+
+impl A {
+    fn make_a(x: i64) -> A {
+        return A { x: x }
+    }
+    fn show_a(self) -> str {
+        return self.x.to_str()
+    }
+}
+
+impl B {
+    fn make_b(y: i64) -> B {
+        return B { y: y }
+    }
+    fn show_b(self) -> str {
+        return self.y.to_str()
+    }
+}
+
+fn main() {
+    let a = A::make_a(42)
+    let b = B::make_b(99)
+    io.println(a.show_a())
+    io.println(b.show_b())
+}

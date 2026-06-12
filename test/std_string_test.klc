@@ -1,0 +1,53 @@
+﻿-- KLC v1.4.3 字符串增强测试
+println("========== 字符串增强测试 ==========")
+
+println("-- str_upper --")
+let upper1 = str_upper("hello")
+assert(upper1 == "HELLO", "str_upper('hello') 应为 'HELLO'")
+let upper2 = str_upper("Hello World")
+assert(upper2 == "HELLO WORLD", "str_upper('Hello World') 应为 'HELLO WORLD'")
+println("str_upper 测试通过")
+
+println("-- str_lower --")
+let lower1 = str_lower("HELLO")
+assert(lower1 == "hello", "str_lower('HELLO') 应为 'hello'")
+let lower2 = str_lower("Hello WORLD")
+assert(lower2 == "hello world", "str_lower 大小写混合")
+println("str_lower 测试通过")
+
+println("-- str_trim --")
+let trim1 = str_trim("  hello  ")
+assert(trim1 == "hello", "str_trim 应去除首尾空格")
+let trim2 = str_trim("\n  test \n")
+assert(trim2 == "test", "str_trim 应去除首尾换行")
+let trim3 = str_trim("hello")
+assert(trim3 == "hello", "str_trim 无空白应不变")
+println("str_trim 测试通过")
+
+println("-- str_contains --")
+let c1 = str_contains("hello world", "world")
+assert(c1 == true, "str_contains 应找到 'world'")
+let c2 = str_contains("hello world", "xyz")
+assert(c2 == false, "str_contains 不应找到 'xyz'")
+let c3 = str_contains("abc", "")
+assert(c3 == true, "空串包含检查")
+println("str_contains 测试通过")
+
+println("-- str_replace --")
+let r1 = str_replace("abcabc", "b", "x")
+assert(r1 == "axcaxc", "str_replace 应替换所有出现")
+let r2 = str_replace("hello", "x", "y")
+assert(r2 == "hello", "str_replace 无匹配应返回原串")
+let r3 = str_replace("a b c", " ", "_")
+assert(r3 == "a_b_c", "str_replace 空格替换")
+println("str_replace 测试通过")
+
+println("-- 兼容性测试 --")
+let s = " Hello "
+let trimmed = s.trim()
+assert(str_trim(trimmed) == "Hello", "方法形式.trim() 仍可用")
+let upper_method = "hi".to_upper()
+assert(upper_method == "HI", "方法形式.to_upper() 仍可用")
+println("兼容性测试通过")
+
+println("========== 字符串增强测试全部通过! ==========")

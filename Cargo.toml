@@ -1,0 +1,47 @@
+﻿[package]
+name = "klc"
+version = "1.4.6"
+edition = "2021"
+description = "KLC Programming Language - Compiler & VM with JIT"
+
+[[bin]]
+name = "klc"
+path = "src/main.rs"
+
+
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[build-dependencies]
+embed-resource = "2.4"
+
+[dependencies]
+
+# ═══════════════════════════════════════════════════════════
+# JIT 编译依赖 (Cranelift 后端)
+# 默认启用, 减少编译时间可用: cargo build --no-default-features
+# ═══════════════════════════════════════════════════════════
+cranelift-codegen = { version = "0.110", optional = true }
+cranelift-frontend = { version = "0.110", optional = true }
+cranelift-module = { version = "0.110", optional = true }
+cranelift-native = { version = "0.110", optional = true }
+cranelift-jit = { version = "0.110", optional = true }
+
+[features]
+default = []
+# 启用 Cranelift JIT 后端 (需要额外编译时间, 提供更好的优化)
+jit-cranelift = [
+    "cranelift-codegen",
+    "cranelift-frontend",
+    "cranelift-module",
+    "cranelift-native",
+    "cranelift-jit",
+]

@@ -1,0 +1,49 @@
+﻿-- ============================================================================
+-- KLC 标准 IO 库快速测试 (无需用户输入)
+-- 用法: klc test/std_io_quick.klc
+--        klc --jit test/std_io_quick.klc  ← 测试 JIT 兼容
+-- ============================================================================
+
+-- 1. 基础输出
+println("=== KLC Std IO Quick Test ===");
+
+-- 2. fmt_printf
+let msg = fmt_printf("Hello, {}! Version: {}", "KLC", "1.4.3");
+println(msg);
+
+-- 3. 文件写入 + 读取 + 验证
+let f = "_klc_quick_test.txt";
+file_write(f, "Hello World");
+let ok1 = file_exists(f);
+if ok1 { println("[PASS] file_write + file_exists"); }
+file_append(f, " -- appended");
+let content = file_read(f);
+if content == "Hello World -- appended" { println("[PASS] file_append"); }
+file_delete(f);
+if file_exists(f) == false { println("[PASS] file_delete"); }
+
+-- 4. print_table
+let h = ["Test", "Result"];
+let r = [
+    ["file_write", "PASS"],
+    ["file_read",  "PASS"],
+    ["print_table","PASS"],
+];
+print_table(h, r);
+
+-- 5. print_debug
+println("--- debug ---");
+print_debug(100);
+print_debug("test string");
+
+-- 6. 旧版 io:: 兼容
+io::write("_compat.txt", "ok");
+if io::exists("_compat.txt") { println("[PASS] io:: 兼容"); }
+io::delete("_compat.txt");
+
+-- 7. flush
+print("flush test... ");
+flush();
+println("done");
+
+println("=== All Quick Tests Done ===");

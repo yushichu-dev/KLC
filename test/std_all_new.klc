@@ -1,0 +1,67 @@
+﻿-- ================================================================
+-- KLC v1.4.3 新增功能 — 全功能综合测试
+-- 运行:  klc test/std_all_new.klc
+-- ================================================================
+
+println("+----------------------------------------------+")
+println("|  KLC v1.4.3 新增功能 全功能测试套件         |")
+println("+----------------------------------------------+")
+println("")
+
+-- 一、数学库
+println("[1/4] 数学库测试...")
+assert(abs(-100) == 100)
+assert(abs(100) == 100)
+assert(sqrt(100.0) >= 9.99)
+assert(pow(2.0, 10.0) >= 1023.9)
+assert(round(3.14) == 3.0)
+assert(floor(2.99) == 2.0)
+assert(ceil(0.01) == 1.0)
+assert(max(-100, 100) == 100.0)
+assert(min(-100, 100) == -100.0)
+assert(type_of(math_pi()) == "f64")
+assert(type_of(math_e()) == "f64")
+println("  数学库: OK")
+
+-- 二、字符串增强
+println("[2/4] 字符串增强测试...")
+assert(str_upper("klc") == "KLC")
+assert(str_lower("KLC") == "klc")
+assert(str_trim("  hi  ") == "hi")
+assert(str_contains("hello world", "world") == true)
+assert(str_contains("abc", "xyz") == false)
+assert(str_replace("aaa", "a", "b") == "bbb")
+println("  字符串增强: OK")
+
+-- 三、数组操作
+println("[3/4] 数组操作测试...")
+let test_arr = __array(10, 20, 30)
+assert(arr_len(test_arr) == 3)
+arr_push(test_arr, 40)
+assert(arr_len(test_arr) == 4)
+let popped = arr_pop(test_arr)
+assert(popped == 40)
+assert(arr_len(test_arr) == 3)
+let sliced = arr_slice(test_arr, 0, 2)
+assert(arr_len(sliced) == 2)
+assert(sliced[0] == 10)
+assert(sliced[1] == 20)
+println("  数组操作: OK")
+
+-- 四、工具函数
+println("[4/4] 工具函数测试...")
+assert(true)
+let path = env_get("PATH")
+assert(type_of(path) == "String")
+assert(type_of(env_get("___NONEXIST___999___")) == "Null")
+assert(type_of(42) == "i64")
+assert(type_of(3.14) == "f64")
+assert(type_of("s") == "String")
+assert(type_of(true) == "Bool")
+assert(type_of(__array()) == "Array")
+println("  工具函数: OK")
+
+println("")
+println("+----------------------------------------------+")
+println("|  全功能测试全部通过!                        |")
+println("+----------------------------------------------+")
